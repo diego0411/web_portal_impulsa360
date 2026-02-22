@@ -117,3 +117,4 @@ Con eso no necesitas ejecutar la API en terminal para crear/editar/eliminar usua
 ## Nota de despliegue
 
 No expongas `SUPABASE_SERVICE_ROLE_KEY` en cliente ni en repositorios publicos.
+# web_portal_impulsa360
