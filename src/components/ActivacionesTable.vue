@@ -28,26 +28,43 @@ let excelJsModulePromise = null
 const filtroPlaza = ref('')
 const filtroDistrito = ref('')
 const filtroImpulsador = ref('')
-const filtroFecha = ref('')
+const filtroFechaDesde = ref('')
+const filtroFechaHasta = ref('')
 const exportandoExcel = ref(false)
 const deletingActivationId = ref(null)
 const { username: apiUser, password: apiPass, hasCredentials } = useAdminApiAuth()
+
+function normalizeDateOnly(value) {
+  const normalized = normalizeText(value)
+  if (!normalized) {
+    return ''
+  }
+
+  const match = normalized.match(/^(\d{4}-\d{2}-\d{2})/)
+  return match ? match[1] : ''
+}
 
 const activacionesFiltradas = computed(() => {
   const plazaQuery = normalizeText(filtroPlaza.value)
   const distritoQuery = normalizeText(filtroDistrito.value)
   const impulsadorQuery = normalizeText(filtroImpulsador.value)
+  const fechaDesde = normalizeDateOnly(filtroFechaDesde.value)
+  const fechaHasta = normalizeDateOnly(filtroFechaHasta.value)
+  const fechaInicio = fechaDesde && fechaHasta && fechaDesde > fechaHasta ? fechaHasta : fechaDesde
+  const fechaFin = fechaDesde && fechaHasta && fechaDesde > fechaHasta ? fechaDesde : fechaHasta
 
   return props.activaciones.filter((activacion) => {
     const plaza = normalizeText(activacion.plaza)
     const distrito = normalizeText(activacion.zona_activacion)
     const impulsador = normalizeText(activacion.impulsador)
-    const fecha = activacion.fecha_activacion ?? ''
+    const fecha = normalizeDateOnly(activacion.fecha_activacion)
 
     const coincidePlaza = !plazaQuery || plaza.includes(plazaQuery)
     const coincideDistrito = !distritoQuery || distrito.includes(distritoQuery)
     const coincideImpulsador = !impulsadorQuery || impulsador.includes(impulsadorQuery)
-    const coincideFecha = !filtroFecha.value || fecha === filtroFecha.value
+    const coincideDesde = !fechaInicio || (fecha && fecha >= fechaInicio)
+    const coincideHasta = !fechaFin || (fecha && fecha <= fechaFin)
+    const coincideFecha = coincideDesde && coincideHasta
 
     return coincidePlaza && coincideDistrito && coincideImpulsador && coincideFecha
   })
@@ -193,7 +210,11 @@ function descargarArchivo({ filename, content, mimeType }) {
 
 function getDatosParaExportar() {
   const hayFiltros =
-    filtroPlaza.value || filtroDistrito.value || filtroImpulsador.value || filtroFecha.value
+    filtroPlaza.value ||
+    filtroDistrito.value ||
+    filtroImpulsador.value ||
+    filtroFechaDesde.value ||
+    filtroFechaHasta.value
 
   return hayFiltros ? activacionesFiltradas.value : props.activaciones
 }
@@ -429,7 +450,7 @@ async function exportarAExcelConImagenes() {
     <div class="section-head">
       <h2 class="section-title">Bitacora Completa</h2>
       <p class="section-caption">
-        Filtra la base por fecha, impulsador, plaza o distrito y exporta los resultados.
+        Filtra la base por rango de fechas, impulsador, plaza o distrito y exporta los resultados.
       </p>
     </div>
     <p v-if="!hasCredentials" class="capacity-detail">
@@ -438,8 +459,13 @@ async function exportarAExcelConImagenes() {
 
     <div class="filtros filtros-grid filtros-activaciones">
       <label>
-        <span class="field-label">Fecha</span>
-        <input type="date" v-model="filtroFecha" class="input-texto" />
+        <span class="field-label">Fecha desde</span>
+        <input type="date" v-model="filtroFechaDesde" class="input-texto" />
+      </label>
+
+      <label>
+        <span class="field-label">Fecha hasta</span>
+        <input type="date" v-model="filtroFechaHasta" class="input-texto" />
       </label>
 
       <label>
