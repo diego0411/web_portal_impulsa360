@@ -118,6 +118,14 @@ select count(*) as total_notificaciones from public.notificaciones;
 select count(*) as total_destinatarios from public.notificaciones_destinatarios;
 ```
 
+5. Verifica alineacion con movil (`id` por destinatario):
+
+```sql
+select id, notificacion_id, usuario_id, leida_at
+from public.notificaciones_destinatarios
+limit 5;
+```
+
 ### Etapa 1.1 (validacion funcional web)
 
 1. En la web, entra a `/notificaciones`.

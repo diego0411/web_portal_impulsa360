@@ -21,6 +21,24 @@ create table if not exists public.notificaciones_destinatarios (
   primary key (notificacion_id, usuario_id)
 );
 
+-- Alineacion con app movil:
+-- cada fila destinatario tiene un id estable para operaciones directas (marcar leida por id).
+alter table public.notificaciones_destinatarios
+  add column if not exists id uuid;
+
+update public.notificaciones_destinatarios
+set id = gen_random_uuid()
+where id is null;
+
+alter table public.notificaciones_destinatarios
+  alter column id set default gen_random_uuid();
+
+alter table public.notificaciones_destinatarios
+  alter column id set not null;
+
+create unique index if not exists idx_notificaciones_destinatarios_id
+  on public.notificaciones_destinatarios (id);
+
 create index if not exists idx_notificaciones_created_at
   on public.notificaciones (created_at desc);
 
