@@ -7,6 +7,14 @@ const activaciones = ref([])
 const loading = ref(true)
 const errorMsg = ref(null)
 
+function onActivacionEliminada({ id }) {
+  if (!id) {
+    return
+  }
+
+  activaciones.value = activaciones.value.filter((item) => item.id !== id)
+}
+
 onMounted(async () => {
   loading.value = true
   errorMsg.value = null
@@ -40,7 +48,11 @@ onMounted(async () => {
     <div class="panel-card">
       <p v-if="loading">Cargando datos...</p>
       <p v-else-if="errorMsg" class="mensaje-error">{{ errorMsg }}</p>
-      <ActivacionesTable v-else :activaciones="activaciones" />
+      <ActivacionesTable
+        v-else
+        :activaciones="activaciones"
+        @activacion-eliminada="onActivacionEliminada"
+      />
     </div>
   </section>
 </template>

@@ -33,6 +33,9 @@ Variables backend (API admin):
 - `ADMIN_BASIC_PASS`
 - `ADMIN_API_PORT` (opcional, por defecto `8787`)
 - `ADMIN_API_CORS_ORIGIN` (opcional, por defecto `http://localhost:5173,http://localhost:5174`)
+- `ADMIN_STORAGE_BUCKET_ACTIVACIONES` (opcional, por defecto usa `VITE_STORAGE_BUCKET_ACTIVACIONES` o `fotos-activaciones`)
+- `ADMIN_STORAGE_LIMIT_MB` (opcional, para mostrar restante estimado de fotos)
+- `ADMIN_DATABASE_LIMIT_MB` (opcional, para mostrar restante estimado de BD)
 
 ## Instalacion
 
@@ -80,6 +83,8 @@ npm run build
 - `POST /admin/users` (requiere Basic Auth)
 - `PATCH /admin/users/:userId` (requiere Basic Auth, acepta `email` y `password` opcionales)
 - `DELETE /admin/users/:userId` (requiere Basic Auth)
+- `DELETE /admin/activaciones/:activacionId` (requiere Basic Auth, elimina registro y foto asociada)
+- `GET /admin/storage/summary` (requiere Basic Auth, resumen de uso de bucket y BD)
 - `GET /admin/notifications` (requiere Basic Auth)
 - `POST /admin/notifications` (requiere Basic Auth)
 
@@ -91,8 +96,18 @@ En Vercel (API serverless) se exponen con prefijo `/api`:
 - `POST /api/admin/users`
 - `PATCH /api/admin/users/:userId`
 - `DELETE /api/admin/users/:userId`
+- `DELETE /api/admin/activaciones/:activacionId`
+- `GET /api/admin/storage/summary`
 - `GET /api/admin/notifications`
 - `POST /api/admin/notifications`
+
+## Gestion de Activaciones (Admin)
+
+- Ruta web: `/activaciones`
+- Funcionalidad nueva:
+  - Eliminar activaciones individualmente (con confirmacion).
+  - Eliminar foto asociada en Storage al borrar la activacion.
+  - Indicador de capacidad (uso de bucket y restante estimado por limite configurado).
 
 ## Modulo de Notificaciones Internas
 
@@ -159,9 +174,27 @@ No requiere cambios extra de backend para el modulo web.
    - `ADMIN_BASIC_USER`
    - `ADMIN_BASIC_PASS`
    - `ADMIN_API_CORS_ORIGIN` (ej: `https://tu-dominio.com,https://*.vercel.app`)
+   - `ADMIN_STORAGE_BUCKET_ACTIVACIONES` (opcional)
+   - `ADMIN_STORAGE_LIMIT_MB` (opcional, ejemplo `1024`)
+   - `ADMIN_DATABASE_LIMIT_MB` (opcional, ejemplo `512`)
 4. Deploy.
 
 Con eso no necesitas ejecutar la API en terminal para crear/editar/eliminar usuarios.
+
+## Opcional: Tamano real de BD
+
+Si quieres que el indicador de BD muestre tamano real (y no solo limite), crea esta funcion en Supabase SQL Editor:
+
+```sql
+create or replace function public.get_database_size_bytes()
+returns bigint
+language sql
+security definer
+set search_path = public, pg_catalog
+as $$
+  select pg_database_size(current_database())::bigint;
+$$;
+```
 
 ## Nota de routing SPA en Vercel
 

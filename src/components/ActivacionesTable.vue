@@ -1,9 +1,12 @@
 <script setup>
 import { computed, ref } from 'vue'
+import { adminApiRequest } from '../lib/adminApiClient'
 import {
   notifyError,
   notifyInfo,
   notifySuccess,
+  notifyWarning,
+  requestConfirmation,
 } from '../lib/feedback'
 import { normalizeText } from '../lib/textUtils'
 
@@ -13,10 +16,12 @@ const props = defineProps({
     default: () => [],
   },
 })
+const emit = defineEmits(['activacion-eliminada'])
 
 const storageBaseUrl = String(import.meta.env.VITE_SUPABASE_URL ?? '').replace(/\/$/, '')
 const storageBucket =
   import.meta.env.VITE_STORAGE_BUCKET_ACTIVACIONES ?? 'fotos-activaciones'
+const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(/\/$/, '')
 let excelJsModulePromise = null
 
 const filtroPlaza = ref('')
@@ -24,6 +29,14 @@ const filtroDistrito = ref('')
 const filtroImpulsador = ref('')
 const filtroFecha = ref('')
 const exportandoExcel = ref(false)
+const apiUser = ref('')
+const apiPass = ref('')
+const conectado = ref(false)
+const conectando = ref(false)
+const authErrorMsg = ref(null)
+const deletingActivationId = ref(null)
+const loadingStorageSummary = ref(false)
+const storageSummary = ref(null)
 
 const activacionesFiltradas = computed(() => {
   const plazaQuery = normalizeText(filtroPlaza.value)
@@ -43,6 +56,28 @@ const activacionesFiltradas = computed(() => {
 
     return coincidePlaza && coincideDistrito && coincideImpulsador && coincideFecha
   })
+})
+
+const puedeConectar = computed(() => {
+  return Boolean(apiUser.value.trim() && apiPass.value)
+})
+
+const storageUsagePercentLabel = computed(() => {
+  const percent = storageSummary.value?.storage_usage_percent
+  if (percent === null || percent === undefined) {
+    return 'N/D'
+  }
+
+  return `${percent.toFixed(1)}%`
+})
+
+const databaseUsagePercentLabel = computed(() => {
+  const percent = storageSummary.value?.database_usage_percent
+  if (percent === null || percent === undefined) {
+    return 'N/D'
+  }
+
+  return `${percent.toFixed(1)}%`
 })
 
 function csvEscape(value) {
@@ -91,6 +126,137 @@ function getRowKey(activacion, index) {
     activacion.id ??
     `${activacion.usuario_id ?? 'sin-usuario'}-${activacion.created_at ?? 'sin-fecha'}-${index}`
   )
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes)
+
+  if (!Number.isFinite(value) || value < 0) {
+    return 'N/D'
+  }
+
+  if (value === 0) {
+    return '0 B'
+  }
+
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const unitIndex = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1)
+  const normalized = value / 1024 ** unitIndex
+
+  if (unitIndex === 0) {
+    return `${Math.round(normalized)} ${units[unitIndex]}`
+  }
+
+  return `${normalized.toFixed(1)} ${units[unitIndex]}`
+}
+
+function getErrorMessage(error) {
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+
+  return 'Se produjo un error inesperado.'
+}
+
+async function requestAdmin(path, options = {}) {
+  return adminApiRequest({
+    baseUrl: apiBaseUrl,
+    path,
+    username: apiUser.value,
+    password: apiPass.value,
+    ...options,
+  })
+}
+
+async function cargarStorageSummary() {
+  if (!conectado.value) {
+    return
+  }
+
+  loadingStorageSummary.value = true
+
+  try {
+    const result = await requestAdmin('/admin/storage/summary')
+    storageSummary.value = result.summary ?? null
+  } catch (error) {
+    notifyError(getErrorMessage(error))
+  } finally {
+    loadingStorageSummary.value = false
+  }
+}
+
+async function conectarApi() {
+  if (!puedeConectar.value) {
+    authErrorMsg.value = 'Ingresa usuario y password de API.'
+    notifyWarning(authErrorMsg.value)
+    return
+  }
+
+  authErrorMsg.value = null
+  conectando.value = true
+
+  try {
+    await requestAdmin('/admin/healthz')
+    conectado.value = true
+    await cargarStorageSummary()
+    notifySuccess('Modulo de activaciones conectado a la API admin.')
+  } catch (error) {
+    conectado.value = false
+    authErrorMsg.value = getErrorMessage(error)
+    notifyError(authErrorMsg.value)
+  } finally {
+    conectando.value = false
+  }
+}
+
+async function eliminarActivacion(activacion) {
+  if (!conectado.value) {
+    notifyWarning('Conecta la API admin para eliminar activaciones.')
+    return
+  }
+
+  const activacionId = normalizeText(activacion?.id)
+  if (!activacionId) {
+    notifyWarning('Esta activacion no tiene ID y no se puede eliminar de forma segura.')
+    return
+  }
+
+  const confirmacion = await requestConfirmation({
+    title: 'Eliminar activacion',
+    message: 'Se eliminara el registro y su foto asociada de forma permanente.',
+    confirmLabel: 'Eliminar',
+    cancelLabel: 'Cancelar',
+    tone: 'danger',
+  })
+  if (!confirmacion) {
+    return
+  }
+
+  deletingActivationId.value = activacionId
+
+  try {
+    const result = await requestAdmin(`/admin/activaciones/${encodeURIComponent(activacionId)}`, {
+      method: 'DELETE',
+    })
+
+    emit('activacion-eliminada', { id: activacionId })
+
+    if (result?.photoDelete?.ok === false) {
+      notifyWarning(
+        'Activacion eliminada, pero no fue posible borrar la foto en Storage. Revisa limpieza manual.'
+      )
+    } else if (result?.photoDelete?.attempted) {
+      notifySuccess('Activacion y foto eliminadas correctamente.')
+    } else {
+      notifySuccess('Activacion eliminada correctamente.')
+    }
+
+    await cargarStorageSummary()
+  } catch (error) {
+    notifyError(getErrorMessage(error))
+  } finally {
+    deletingActivationId.value = null
+  }
 }
 
 async function loadExcelJs() {
@@ -357,6 +523,77 @@ async function exportarAExcelConImagenes() {
       </p>
     </div>
 
+    <div class="forms-grid">
+      <div class="formulario-registro">
+        <h3 class="subtitulo">Conexion API Admin</h3>
+        <form class="formulario-campos" @submit.prevent="conectarApi">
+          <input
+            v-model="apiUser"
+            placeholder="Usuario API"
+            class="input-texto"
+            @keydown.enter.prevent="conectarApi"
+          />
+          <input
+            v-model="apiPass"
+            type="password"
+            placeholder="Password API"
+            class="input-texto"
+            @keydown.enter.prevent="conectarApi"
+          />
+          <button type="submit" class="boton boton-primario" :disabled="conectando || !puedeConectar">
+            {{ conectando ? 'Conectando...' : 'Conectar para gestion segura' }}
+          </button>
+          <p v-if="authErrorMsg" class="mensaje-error">{{ authErrorMsg }}</p>
+          <p v-else-if="conectado">Conectado a {{ apiBaseUrl }}</p>
+        </form>
+      </div>
+
+      <div class="formulario-registro">
+        <div class="toolbar-line">
+          <h3 class="subtitulo subtitulo-inline">Capacidad de almacenamiento</h3>
+          <button class="boton" :disabled="!conectado || loadingStorageSummary" @click="cargarStorageSummary">
+            {{ loadingStorageSummary ? 'Actualizando...' : 'Actualizar' }}
+          </button>
+        </div>
+        <div v-if="!conectado" class="panel-empty">
+          Conecta la API admin para ver uso de almacenamiento y estimado disponible.
+        </div>
+        <div v-else-if="!storageSummary" class="panel-empty">
+          No se pudo cargar el resumen de almacenamiento.
+        </div>
+        <div v-else class="capacity-grid">
+          <div class="capacity-card">
+            <p class="capacity-label">Fotos en bucket</p>
+            <p class="capacity-value">{{ formatBytes(storageSummary.storage_used_bytes) }}</p>
+            <p class="capacity-detail">
+              {{ storageSummary.storage_objects_count }} archivos · uso {{ storageUsagePercentLabel }}
+            </p>
+          </div>
+          <div class="capacity-card">
+            <p class="capacity-label">Restante estimado (fotos)</p>
+            <p class="capacity-value">{{ formatBytes(storageSummary.storage_remaining_bytes) }}</p>
+            <p class="capacity-detail">
+              Limite configurado:
+              {{ formatBytes(storageSummary.storage_limit_bytes) }}
+            </p>
+          </div>
+          <div class="capacity-card">
+            <p class="capacity-label">Tamano base de datos</p>
+            <p class="capacity-value">{{ formatBytes(storageSummary.database_size_bytes) }}</p>
+            <p class="capacity-detail">
+              Uso {{ databaseUsagePercentLabel }} · disponible {{ formatBytes(storageSummary.database_remaining_bytes) }}
+            </p>
+            <p
+              v-if="storageSummary.database_size_unavailable_reason"
+              class="capacity-detail"
+            >
+              Fuente real no disponible: {{ storageSummary.database_size_unavailable_reason }}
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="filtros filtros-grid filtros-activaciones">
       <label>
         <span class="field-label">Fecha</span>
@@ -443,6 +680,7 @@ async function exportarAExcelConImagenes() {
             <th>Latitud</th>
             <th>Longitud</th>
             <th>Usuario ID</th>
+            <th>Acciones</th>
           </tr>
         </thead>
         <tbody>
@@ -484,6 +722,21 @@ async function exportarAExcelConImagenes() {
             <td>{{ activacion.latitud }}</td>
             <td>{{ activacion.longitud }}</td>
             <td>{{ activacion.usuario_id }}</td>
+            <td>
+              <button
+                class="boton boton-eliminar"
+                :disabled="!conectado || deletingActivationId === activacion.id || !activacion.id"
+                @click="eliminarActivacion(activacion)"
+              >
+                {{
+                  deletingActivationId === activacion.id
+                    ? 'Eliminando...'
+                    : !activacion.id
+                      ? 'Sin ID'
+                      : 'Eliminar'
+                }}
+              </button>
+            </td>
           </tr>
         </tbody>
       </table>

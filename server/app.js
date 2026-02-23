@@ -176,11 +176,187 @@ function parseLimit(value, { fallback = 50, min = 1, max = 200 } = {}) {
   return Math.min(max, Math.max(min, parsed))
 }
 
+function parseOptionalMegabytes(rawValue) {
+  const parsed = Number.parseFloat(String(rawValue ?? ''))
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null
+  }
+
+  return Math.round(parsed * 1024 * 1024)
+}
+
+function resolveActivacionesBucket(env) {
+  const adminBucket = normalizeText(env.ADMIN_STORAGE_BUCKET_ACTIVACIONES)
+  if (adminBucket) {
+    return adminBucket
+  }
+
+  const frontendBucket = normalizeText(env.VITE_STORAGE_BUCKET_ACTIVACIONES)
+  if (frontendBucket) {
+    return frontendBucket
+  }
+
+  return 'fotos-activaciones'
+}
+
+function decodeURIComponentSafe(value) {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+function resolveStorageObjectPathFromFotoUrl(fotoUrl, bucketName) {
+  const normalized = normalizeText(fotoUrl)
+  if (!normalized) {
+    return null
+  }
+
+  let path = normalized
+
+  if (/^https?:\/\//i.test(path)) {
+    try {
+      const parsedUrl = new URL(path)
+      path = parsedUrl.pathname ?? ''
+    } catch {
+      return null
+    }
+  }
+
+  path = path.split('?')[0]?.split('#')[0] ?? ''
+  path = path.replace(/^\/+/, '')
+
+  if (!path) {
+    return null
+  }
+
+  const publicPrefix = `storage/v1/object/public/${bucketName}/`
+  const signPrefix = `storage/v1/object/sign/${bucketName}/`
+
+  if (path.startsWith(publicPrefix)) {
+    return decodeURIComponentSafe(path.slice(publicPrefix.length)).replace(/^\/+/, '')
+  }
+
+  if (path.startsWith(signPrefix)) {
+    return decodeURIComponentSafe(path.slice(signPrefix.length)).replace(/^\/+/, '')
+  }
+
+  const genericPublicPrefix = 'storage/v1/object/public/'
+  if (path.startsWith(genericPublicPrefix)) {
+    const afterPrefix = path.slice(genericPublicPrefix.length)
+    if (!afterPrefix.startsWith(`${bucketName}/`)) {
+      return null
+    }
+
+    return decodeURIComponentSafe(afterPrefix.slice(bucketName.length + 1)).replace(/^\/+/, '')
+  }
+
+  const genericSignPrefix = 'storage/v1/object/sign/'
+  if (path.startsWith(genericSignPrefix)) {
+    const afterPrefix = path.slice(genericSignPrefix.length)
+    if (!afterPrefix.startsWith(`${bucketName}/`)) {
+      return null
+    }
+
+    return decodeURIComponentSafe(afterPrefix.slice(bucketName.length + 1)).replace(/^\/+/, '')
+  }
+
+  if (path.startsWith(`${bucketName}/`)) {
+    return decodeURIComponentSafe(path.slice(bucketName.length + 1)).replace(/^\/+/, '')
+  }
+
+  return decodeURIComponentSafe(path).replace(/^\/+/, '')
+}
+
+async function calculateBucketUsageBytes(adminSupabase, bucketName) {
+  const directoriesQueue = ['']
+  const visitedDirectories = new Set()
+  let totalBytes = 0
+  let totalObjects = 0
+
+  while (directoriesQueue.length > 0) {
+    const currentDirectory = directoriesQueue.shift() ?? ''
+
+    if (visitedDirectories.has(currentDirectory)) {
+      continue
+    }
+
+    visitedDirectories.add(currentDirectory)
+
+    let offset = 0
+    const limit = 1000
+
+    while (true) {
+      const { data, error } = await adminSupabase.storage.from(bucketName).list(currentDirectory, {
+        limit,
+        offset,
+        sortBy: { column: 'name', order: 'asc' },
+      })
+
+      if (error) {
+        throw new Error(error.message)
+      }
+
+      if (!data?.length) {
+        break
+      }
+
+      for (const item of data) {
+        const name = normalizeText(item?.name)
+        if (!name) {
+          continue
+        }
+
+        const isDirectory = item?.id == null && !item?.metadata
+        if (isDirectory) {
+          const nextDirectory = currentDirectory ? `${currentDirectory}/${name}` : name
+          if (!visitedDirectories.has(nextDirectory)) {
+            directoriesQueue.push(nextDirectory)
+          }
+          continue
+        }
+
+        if (name === '.emptyFolderPlaceholder') {
+          continue
+        }
+
+        totalObjects += 1
+
+        const sizeCandidate =
+          item?.metadata?.size ??
+          item?.metadata?.contentLength ??
+          item?.metadata?.content_length
+        const size = Number(sizeCandidate)
+
+        if (Number.isFinite(size) && size > 0) {
+          totalBytes += size
+        }
+      }
+
+      if (data.length < limit) {
+        break
+      }
+
+      offset += limit
+    }
+  }
+
+  return {
+    totalBytes,
+    totalObjects,
+  }
+}
+
 export function createAdminApiApp({ env = process.env } = {}) {
   assertRequiredEnv(env)
 
   const allowedOrigins = buildAllowedOrigins(env.ADMIN_API_CORS_ORIGIN)
   const allowedOriginMatchers = allowedOrigins.map(buildOriginMatcher)
+  const activacionesBucket = resolveActivacionesBucket(env)
+  const storageLimitBytes = parseOptionalMegabytes(env.ADMIN_STORAGE_LIMIT_MB)
+  const databaseLimitBytes = parseOptionalMegabytes(env.ADMIN_DATABASE_LIMIT_MB)
   const adminSupabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
     auth: {
       autoRefreshToken: false,
@@ -496,6 +672,184 @@ export function createAdminApiApp({ env = process.env } = {}) {
       }
 
       res.json({ ok: true, tableRecordDeleted })
+    })
+  )
+
+  app.get(
+    '/admin/storage/summary',
+    asyncRoute(async (_req, res) => {
+      const { count: activacionesCount, error: activacionesCountErr } = await adminSupabase
+        .from('activaciones')
+        .select('id', { count: 'exact', head: true })
+
+      if (activacionesCountErr) {
+        jsonError(res, 500, 'No se pudo obtener conteo de activaciones.', activacionesCountErr.message)
+        return
+      }
+
+      let bucketUsage = null
+      try {
+        bucketUsage = await calculateBucketUsageBytes(adminSupabase, activacionesBucket)
+      } catch (error) {
+        jsonError(
+          res,
+          500,
+          'No se pudo calcular uso del bucket de fotos.',
+          error instanceof Error ? error.message : undefined
+        )
+        return
+      }
+
+      let databaseSizeBytes = null
+      let databaseSizeUnavailableReason = null
+
+      const { data: databaseSizeData, error: databaseSizeErr } = await adminSupabase.rpc(
+        'get_database_size_bytes'
+      )
+
+      if (databaseSizeErr) {
+        databaseSizeUnavailableReason = databaseSizeErr.message
+      } else if (typeof databaseSizeData === 'number') {
+        databaseSizeBytes = databaseSizeData
+      } else if (typeof databaseSizeData === 'string') {
+        const parsedSize = Number(databaseSizeData)
+        if (Number.isFinite(parsedSize) && parsedSize >= 0) {
+          databaseSizeBytes = parsedSize
+        }
+      } else if (databaseSizeData && typeof databaseSizeData === 'object') {
+        const candidate =
+          databaseSizeData.get_database_size_bytes ??
+          databaseSizeData.database_size_bytes ??
+          databaseSizeData.size_bytes ??
+          null
+        const parsedSize = Number(candidate)
+        if (Number.isFinite(parsedSize) && parsedSize >= 0) {
+          databaseSizeBytes = parsedSize
+        }
+      }
+
+      const storageRemainingBytes =
+        storageLimitBytes == null ? null : Math.max(0, storageLimitBytes - bucketUsage.totalBytes)
+      const storageUsagePercent =
+        storageLimitBytes == null || storageLimitBytes <= 0
+          ? null
+          : Number(((bucketUsage.totalBytes / storageLimitBytes) * 100).toFixed(2))
+
+      const databaseRemainingBytes =
+        databaseLimitBytes == null || databaseSizeBytes == null
+          ? null
+          : Math.max(0, databaseLimitBytes - databaseSizeBytes)
+      const databaseUsagePercent =
+        databaseLimitBytes == null || databaseLimitBytes <= 0 || databaseSizeBytes == null
+          ? null
+          : Number(((databaseSizeBytes / databaseLimitBytes) * 100).toFixed(2))
+
+      res.json({
+        summary: {
+          bucket: activacionesBucket,
+          activaciones_count: activacionesCount ?? 0,
+          storage_objects_count: bucketUsage.totalObjects,
+          storage_used_bytes: bucketUsage.totalBytes,
+          storage_limit_bytes: storageLimitBytes,
+          storage_remaining_bytes: storageRemainingBytes,
+          storage_usage_percent: storageUsagePercent,
+          database_size_bytes: databaseSizeBytes,
+          database_limit_bytes: databaseLimitBytes,
+          database_remaining_bytes: databaseRemainingBytes,
+          database_usage_percent: databaseUsagePercent,
+          database_size_source:
+            databaseSizeBytes == null ? null : 'rpc:get_database_size_bytes',
+          database_size_unavailable_reason:
+            databaseSizeBytes == null ? databaseSizeUnavailableReason : null,
+        },
+      })
+    })
+  )
+
+  app.delete(
+    '/admin/activaciones/:activacionId',
+    asyncRoute(async (req, res) => {
+      const activacionId = normalizeText(req.params?.activacionId)
+      if (!activacionId) {
+        jsonError(res, 400, 'Parametro activacionId requerido.')
+        return
+      }
+
+      const { data: existingRow, error: existingRowErr } = await adminSupabase
+        .from('activaciones')
+        .select('id, foto_url')
+        .eq('id', activacionId)
+        .maybeSingle()
+
+      if (existingRowErr) {
+        jsonError(res, 500, 'No se pudo leer la activacion.', existingRowErr.message)
+        return
+      }
+
+      if (!existingRow?.id) {
+        jsonError(res, 404, 'No se encontro la activacion indicada.')
+        return
+      }
+
+      const storageObjectPath = resolveStorageObjectPathFromFotoUrl(
+        existingRow.foto_url,
+        activacionesBucket
+      )
+
+      const { data: deletedRows, error: deleteActivationErr } = await adminSupabase
+        .from('activaciones')
+        .delete()
+        .eq('id', activacionId)
+        .select('id')
+
+      if (deleteActivationErr) {
+        jsonError(res, 500, 'No se pudo eliminar la activacion.', deleteActivationErr.message)
+        return
+      }
+
+      const deletedActivation = Array.isArray(deletedRows) && deletedRows.length > 0
+      if (!deletedActivation) {
+        jsonError(res, 404, 'No se encontro la activacion indicada para eliminar.')
+        return
+      }
+
+      const photoDelete = {
+        attempted: Boolean(storageObjectPath),
+        ok: true,
+        bucket: activacionesBucket,
+        object_path: storageObjectPath ?? null,
+        message: storageObjectPath
+          ? 'Foto eliminada correctamente.'
+          : 'La activacion no tenia foto asociada.',
+      }
+
+      if (storageObjectPath) {
+        const { error: removePhotoErr } = await adminSupabase.storage
+          .from(activacionesBucket)
+          .remove([storageObjectPath])
+
+        if (removePhotoErr) {
+          photoDelete.ok = false
+          photoDelete.message = removePhotoErr.message
+        }
+      }
+
+      if (!photoDelete.ok) {
+        res.json({
+          ok: true,
+          warning:
+            'La activacion se elimino, pero no fue posible borrar la foto del almacenamiento.',
+          deleted_activation: true,
+          photoDelete,
+        })
+        return
+      }
+
+      res.json({
+        ok: true,
+        deleted_activation: true,
+        photoDelete,
+      })
     })
   )
 
