@@ -1,13 +1,18 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { adminApiRequest } from '../lib/adminApiClient'
+import { useAdminApiAuth } from '../lib/adminAuthStore'
 import { notifyError, notifySuccess, notifyWarning } from '../lib/feedback'
 import { containsNormalized } from '../lib/textUtils'
 
 const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(/\/$/, '')
 
-const apiUser = ref('')
-const apiPass = ref('')
+const {
+  username: apiUser,
+  password: apiPass,
+  hasCredentials: puedeConectar,
+  setCredentials,
+} = useAdminApiAuth()
 const conectado = ref(false)
 const conectando = ref(false)
 const authErrorMsg = ref(null)
@@ -29,10 +34,6 @@ const filtroAlcance = ref('')
 const formatDateTime = new Intl.DateTimeFormat('es-BO', {
   dateStyle: 'short',
   timeStyle: 'short',
-})
-
-const puedeConectar = computed(() => {
-  return Boolean(apiUser.value.trim() && apiPass.value)
 })
 
 const usuariosOrdenados = computed(() => {
@@ -152,6 +153,7 @@ async function conectarApi() {
 
   try {
     await requestAdmin('/admin/healthz')
+    setCredentials(apiUser.value, apiPass.value)
     conectado.value = true
     await Promise.all([cargarUsuarios(), cargarNotificaciones()])
     notifySuccess('Modulo de notificaciones conectado a la API.')

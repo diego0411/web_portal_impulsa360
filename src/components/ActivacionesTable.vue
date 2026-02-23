@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { adminApiRequest } from '../lib/adminApiClient'
+import { useAdminApiAuth } from '../lib/adminAuthStore'
 import {
   notifyError,
   notifyInfo,
@@ -29,14 +30,8 @@ const filtroDistrito = ref('')
 const filtroImpulsador = ref('')
 const filtroFecha = ref('')
 const exportandoExcel = ref(false)
-const apiUser = ref('')
-const apiPass = ref('')
-const conectado = ref(false)
-const conectando = ref(false)
-const authErrorMsg = ref(null)
 const deletingActivationId = ref(null)
-const loadingStorageSummary = ref(false)
-const storageSummary = ref(null)
+const { username: apiUser, password: apiPass, hasCredentials } = useAdminApiAuth()
 
 const activacionesFiltradas = computed(() => {
   const plazaQuery = normalizeText(filtroPlaza.value)
@@ -56,37 +51,6 @@ const activacionesFiltradas = computed(() => {
 
     return coincidePlaza && coincideDistrito && coincideImpulsador && coincideFecha
   })
-})
-
-const puedeConectar = computed(() => {
-  return Boolean(apiUser.value.trim() && apiPass.value)
-})
-
-const storageUsagePercentLabel = computed(() => {
-  const percent = storageSummary.value?.storage_usage_percent
-  if (percent === null || percent === undefined) {
-    return 'N/D'
-  }
-
-  return `${percent.toFixed(1)}%`
-})
-
-const databaseUsagePercentLabel = computed(() => {
-  const percent = storageSummary.value?.database_usage_percent
-  if (percent === null || percent === undefined) {
-    return 'N/D'
-  }
-
-  return `${percent.toFixed(1)}%`
-})
-
-const databaseSizeAvailable = computed(() => {
-  const size = storageSummary.value?.database_size_bytes
-  return size !== null && size !== undefined && Number.isFinite(Number(size)) && Number(size) >= 0
-})
-
-const planReference = computed(() => {
-  return storageSummary.value?.plan_reference ?? null
 })
 
 function csvEscape(value) {
@@ -137,41 +101,6 @@ function getRowKey(activacion, index) {
   )
 }
 
-function formatBytes(bytes) {
-  if (bytes === null || bytes === undefined || bytes === '') {
-    return 'N/D'
-  }
-
-  const value = Number(bytes)
-
-  if (!Number.isFinite(value) || value < 0) {
-    return 'N/D'
-  }
-
-  if (value === 0) {
-    return '0 B'
-  }
-
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const unitIndex = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1)
-  const normalized = value / 1024 ** unitIndex
-
-  if (unitIndex === 0) {
-    return `${Math.round(normalized)} ${units[unitIndex]}`
-  }
-
-  return `${normalized.toFixed(1)} ${units[unitIndex]}`
-}
-
-function formatNumber(value) {
-  const parsed = Number(value)
-  if (!Number.isFinite(parsed)) {
-    return 'N/D'
-  }
-
-  return new Intl.NumberFormat('es-BO').format(parsed)
-}
-
 function getErrorMessage(error) {
   if (error instanceof Error && error.message) {
     return error.message
@@ -190,50 +119,11 @@ async function requestAdmin(path, options = {}) {
   })
 }
 
-async function cargarStorageSummary() {
-  if (!conectado.value) {
-    return
-  }
-
-  loadingStorageSummary.value = true
-
-  try {
-    const result = await requestAdmin('/admin/storage/summary')
-    storageSummary.value = result.summary ?? null
-  } catch (error) {
-    notifyError(getErrorMessage(error))
-  } finally {
-    loadingStorageSummary.value = false
-  }
-}
-
-async function conectarApi() {
-  if (!puedeConectar.value) {
-    authErrorMsg.value = 'Ingresa usuario y password de API.'
-    notifyWarning(authErrorMsg.value)
-    return
-  }
-
-  authErrorMsg.value = null
-  conectando.value = true
-
-  try {
-    await requestAdmin('/admin/healthz')
-    conectado.value = true
-    await cargarStorageSummary()
-    notifySuccess('Modulo de activaciones conectado a la API admin.')
-  } catch (error) {
-    conectado.value = false
-    authErrorMsg.value = getErrorMessage(error)
-    notifyError(authErrorMsg.value)
-  } finally {
-    conectando.value = false
-  }
-}
-
 async function eliminarActivacion(activacion) {
-  if (!conectado.value) {
-    notifyWarning('Conecta la API admin para eliminar activaciones.')
+  if (!hasCredentials.value) {
+    notifyWarning(
+      'Conecta la API admin desde Usuarios, Notificaciones o Capacidad para eliminar activaciones.'
+    )
     return
   }
 
@@ -272,8 +162,6 @@ async function eliminarActivacion(activacion) {
     } else {
       notifySuccess('Activacion eliminada correctamente.')
     }
-
-    await cargarStorageSummary()
   } catch (error) {
     notifyError(getErrorMessage(error))
   } finally {
@@ -544,84 +432,9 @@ async function exportarAExcelConImagenes() {
         Filtra la base por fecha, impulsador, plaza o distrito y exporta los resultados.
       </p>
     </div>
-
-    <div class="forms-grid">
-      <div class="formulario-registro">
-        <h3 class="subtitulo">Conexion API Admin</h3>
-        <form class="formulario-campos" @submit.prevent="conectarApi">
-          <input
-            v-model="apiUser"
-            placeholder="Usuario API"
-            class="input-texto"
-            @keydown.enter.prevent="conectarApi"
-          />
-          <input
-            v-model="apiPass"
-            type="password"
-            placeholder="Password API"
-            class="input-texto"
-            @keydown.enter.prevent="conectarApi"
-          />
-          <button type="submit" class="boton boton-primario" :disabled="conectando || !puedeConectar">
-            {{ conectando ? 'Conectando...' : 'Conectar para gestion segura' }}
-          </button>
-          <p v-if="authErrorMsg" class="mensaje-error">{{ authErrorMsg }}</p>
-          <p v-else-if="conectado">Conectado a {{ apiBaseUrl }}</p>
-        </form>
-      </div>
-
-      <div class="formulario-registro">
-        <div class="toolbar-line">
-          <h3 class="subtitulo subtitulo-inline">Capacidad de almacenamiento</h3>
-          <button class="boton" :disabled="!conectado || loadingStorageSummary" @click="cargarStorageSummary">
-            {{ loadingStorageSummary ? 'Actualizando...' : 'Actualizar' }}
-          </button>
-        </div>
-        <div v-if="!conectado" class="panel-empty">
-          Conecta la API admin para ver uso de almacenamiento y estimado disponible.
-        </div>
-        <div v-else-if="!storageSummary" class="panel-empty">
-          No se pudo cargar el resumen de almacenamiento.
-        </div>
-        <div v-else class="capacity-grid">
-          <div class="capacity-card">
-            <p class="capacity-label">Fotos usadas</p>
-            <p class="capacity-value">{{ formatBytes(storageSummary.storage_used_bytes) }}</p>
-            <p class="capacity-detail">
-              {{ storageUsagePercentLabel }} del limite · {{ storageSummary.storage_objects_count }} archivos
-            </p>
-          </div>
-          <div class="capacity-card">
-            <p class="capacity-label">Disponible (fotos)</p>
-            <p class="capacity-value">{{ formatBytes(storageSummary.storage_remaining_bytes) }}</p>
-            <p class="capacity-detail">
-              de {{ formatBytes(storageSummary.storage_limit_bytes) }}
-            </p>
-          </div>
-          <div v-if="databaseSizeAvailable" class="capacity-card">
-            <p class="capacity-label">Base de datos</p>
-            <p class="capacity-value">{{ formatBytes(storageSummary.database_size_bytes) }}</p>
-            <p class="capacity-detail">
-              {{ databaseUsagePercentLabel }} en uso · disponible {{ formatBytes(storageSummary.database_remaining_bytes) }}
-            </p>
-          </div>
-          <div v-if="planReference" class="capacity-card">
-            <p class="capacity-label">Plan</p>
-            <p class="capacity-value">{{ planReference.name }}</p>
-            <div class="capacity-chips">
-              <span class="capacity-chip">API ilimitada</span>
-              <span class="capacity-chip">MAU {{ formatNumber(planReference.monthly_active_users_limit) }}</span>
-              <span class="capacity-chip">DB {{ formatBytes(planReference.database_limit_bytes) }}</span>
-              <span class="capacity-chip">Storage {{ formatBytes(planReference.file_storage_limit_bytes) }}</span>
-              <span class="capacity-chip">Egress {{ formatBytes(planReference.egress_limit_bytes) }}</span>
-              <span class="capacity-chip">Cache {{ formatBytes(planReference.cached_egress_limit_bytes) }}</span>
-              <span class="capacity-chip">RAM {{ planReference.shared_ram_mb }} MB</span>
-              <span class="capacity-chip">{{ planReference.support }}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+    <p v-if="!hasCredentials" class="capacity-detail">
+      Eliminacion disponible cuando conectas la API admin en otro modulo.
+    </p>
 
     <div class="filtros filtros-grid filtros-activaciones">
       <label>
@@ -754,7 +567,7 @@ async function exportarAExcelConImagenes() {
             <td>
               <button
                 class="boton boton-eliminar"
-                :disabled="!conectado || deletingActivationId === activacion.id || !activacion.id"
+                :disabled="!hasCredentials || deletingActivationId === activacion.id || !activacion.id"
                 @click="eliminarActivacion(activacion)"
               >
                 {{

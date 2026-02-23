@@ -107,7 +107,14 @@ En Vercel (API serverless) se exponen con prefijo `/api`:
 - Funcionalidad nueva:
   - Eliminar activaciones individualmente (con confirmacion).
   - Eliminar foto asociada en Storage al borrar la activacion.
-  - Indicador de capacidad (uso de bucket y restante estimado por limite configurado).
+
+## Modulo de Capacidad
+
+- Ruta web: `/capacidad`
+- Funcionalidad:
+  - Uso y disponible de storage.
+  - Uso y disponible de base de datos (real si existe RPC, estimado si no).
+  - Estimado de peso por activacion y activaciones restantes antes del limite.
 
 ## Referencia Plan Free Integrada
 

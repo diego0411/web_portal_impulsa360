@@ -363,6 +363,201 @@ async function calculateBucketUsageBytes(adminSupabase, bucketName) {
   }
 }
 
+async function estimateDatabaseUsageFromActivaciones(
+  adminSupabase,
+  {
+    activacionesCount = 0,
+    databaseLimitBytes = null,
+    sampleLimit = 240,
+    overheadFactor = 1.34,
+  } = {}
+) {
+  const normalizedCount = Number(activacionesCount)
+  if (!Number.isFinite(normalizedCount) || normalizedCount <= 0) {
+    return {
+      sample_size: 0,
+      overhead_factor: overheadFactor,
+      per_activation_estimated_bytes: 0,
+      estimated_database_used_bytes: 0,
+      estimated_database_remaining_bytes:
+        databaseLimitBytes == null ? null : Math.max(0, databaseLimitBytes),
+      estimated_database_usage_percent: databaseLimitBytes == null ? null : 0,
+      estimated_activaciones_capacity_total: null,
+      estimated_activaciones_capacity_remaining: null,
+    }
+  }
+
+  const safeSampleLimit = Math.max(40, Math.min(500, Number(sampleLimit) || 240))
+  const { data: sampleRows, error: sampleErr } = await adminSupabase
+    .from('activaciones')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(safeSampleLimit)
+
+  if (sampleErr) {
+    throw new Error(sampleErr.message)
+  }
+
+  const rows = sampleRows ?? []
+  if (!rows.length) {
+    return {
+      sample_size: 0,
+      overhead_factor: overheadFactor,
+      per_activation_estimated_bytes: 0,
+      estimated_database_used_bytes: 0,
+      estimated_database_remaining_bytes:
+        databaseLimitBytes == null ? null : Math.max(0, databaseLimitBytes),
+      estimated_database_usage_percent: databaseLimitBytes == null ? null : 0,
+      estimated_activaciones_capacity_total: null,
+      estimated_activaciones_capacity_remaining: null,
+    }
+  }
+
+  const totalJsonPayloadBytes = rows.reduce((accumulator, row) => {
+    try {
+      return accumulator + Buffer.byteLength(JSON.stringify(row), 'utf8')
+    } catch {
+      return accumulator
+    }
+  }, 0)
+
+  const averageJsonPayloadBytes = totalJsonPayloadBytes / rows.length
+  const perActivationEstimatedBytes = Math.max(1, Math.round(averageJsonPayloadBytes * overheadFactor))
+  const estimatedDatabaseUsedBytes = Math.round(perActivationEstimatedBytes * normalizedCount)
+  const estimatedDatabaseRemainingBytes =
+    databaseLimitBytes == null
+      ? null
+      : Math.max(0, Math.round(databaseLimitBytes - estimatedDatabaseUsedBytes))
+  const estimatedDatabaseUsagePercent =
+    databaseLimitBytes == null || databaseLimitBytes <= 0
+      ? null
+      : Number(((estimatedDatabaseUsedBytes / databaseLimitBytes) * 100).toFixed(2))
+  const estimatedActivacionesCapacityTotal =
+    databaseLimitBytes == null || databaseLimitBytes <= 0
+      ? null
+      : Math.max(0, Math.floor(databaseLimitBytes / perActivationEstimatedBytes))
+  const estimatedActivacionesCapacityRemaining =
+    estimatedActivacionesCapacityTotal == null
+      ? null
+      : Math.max(0, estimatedActivacionesCapacityTotal - normalizedCount)
+
+  return {
+    sample_size: rows.length,
+    overhead_factor: overheadFactor,
+    per_activation_estimated_bytes: perActivationEstimatedBytes,
+    estimated_database_used_bytes: estimatedDatabaseUsedBytes,
+    estimated_database_remaining_bytes: estimatedDatabaseRemainingBytes,
+    estimated_database_usage_percent: estimatedDatabaseUsagePercent,
+    estimated_activaciones_capacity_total: estimatedActivacionesCapacityTotal,
+    estimated_activaciones_capacity_remaining: estimatedActivacionesCapacityRemaining,
+  }
+}
+
+function estimateCombinedActivationCapacity({
+  activacionesCount = 0,
+  activacionesWithPhotoCount = 0,
+  storageObjectsCount = 0,
+  storageUsedBytes = null,
+  storageRemainingBytes = null,
+  databaseRemainingBytes = null,
+  perActivationDatabaseBytes = null,
+} = {}) {
+  const normalizedActivacionesCount = Math.max(0, Number(activacionesCount) || 0)
+  const normalizedActivacionesWithPhotoCount = Math.max(0, Number(activacionesWithPhotoCount) || 0)
+  const normalizedStorageObjectsCount = Math.max(0, Number(storageObjectsCount) || 0)
+  const normalizedStorageUsedBytes = Number.isFinite(Number(storageUsedBytes))
+    ? Math.max(0, Number(storageUsedBytes))
+    : null
+  const normalizedStorageRemainingBytes = Number.isFinite(Number(storageRemainingBytes))
+    ? Math.max(0, Number(storageRemainingBytes))
+    : null
+  const normalizedDatabaseRemainingBytes = Number.isFinite(Number(databaseRemainingBytes))
+    ? Math.max(0, Number(databaseRemainingBytes))
+    : null
+  const normalizedPerActivationDatabaseBytes =
+    Number.isFinite(Number(perActivationDatabaseBytes)) && Number(perActivationDatabaseBytes) > 0
+      ? Math.round(Number(perActivationDatabaseBytes))
+      : null
+
+  const photoSampleCount =
+    normalizedActivacionesWithPhotoCount > 0
+      ? normalizedActivacionesWithPhotoCount
+      : normalizedStorageObjectsCount > 0
+        ? normalizedStorageObjectsCount
+        : 0
+
+  const averagePhotoBytes =
+    normalizedStorageUsedBytes != null && photoSampleCount > 0
+      ? Math.max(1, Math.round(normalizedStorageUsedBytes / photoSampleCount))
+      : null
+
+  const remainingByDatabase =
+    normalizedDatabaseRemainingBytes != null && normalizedPerActivationDatabaseBytes != null
+      ? Math.max(0, Math.floor(normalizedDatabaseRemainingBytes / normalizedPerActivationDatabaseBytes))
+      : null
+  const remainingByStorage =
+    normalizedStorageRemainingBytes != null && averagePhotoBytes != null
+      ? Math.max(0, Math.floor(normalizedStorageRemainingBytes / averagePhotoBytes))
+      : null
+
+  const estimatedRemaining =
+    remainingByDatabase != null && remainingByStorage != null
+      ? Math.min(remainingByDatabase, remainingByStorage)
+      : remainingByDatabase ?? remainingByStorage
+
+  const limitingFactor =
+    remainingByDatabase != null && remainingByStorage != null
+      ? remainingByStorage <= remainingByDatabase
+        ? 'storage'
+        : 'database'
+      : remainingByStorage != null
+        ? 'storage'
+        : remainingByDatabase != null
+          ? 'database'
+          : null
+
+  const unavailableReasons = []
+  if (averagePhotoBytes == null) {
+    unavailableReasons.push('Sin muestra de fotos para calcular promedio.')
+  }
+  if (normalizedPerActivationDatabaseBytes == null) {
+    unavailableReasons.push('Sin muestra suficiente para calcular peso de activacion en base de datos.')
+  }
+
+  const estimatedTotal =
+    estimatedRemaining == null ? null : Math.max(normalizedActivacionesCount, normalizedActivacionesCount + estimatedRemaining)
+  const perActivationTotalEstimatedBytes =
+    normalizedPerActivationDatabaseBytes != null && averagePhotoBytes != null
+      ? normalizedPerActivationDatabaseBytes + averagePhotoBytes
+      : null
+  const photoCoveragePercent =
+    normalizedActivacionesCount > 0
+      ? Number(
+          (
+            (Math.min(normalizedActivacionesWithPhotoCount, normalizedActivacionesCount) /
+              normalizedActivacionesCount) *
+            100
+          ).toFixed(2)
+        )
+      : null
+
+  return {
+    one_photo_per_activation_assumed: true,
+    activaciones_with_photo_count: normalizedActivacionesWithPhotoCount,
+    photo_coverage_percent: photoCoveragePercent,
+    sample_photos_count: photoSampleCount,
+    average_photo_bytes: averagePhotoBytes,
+    per_activation_database_estimated_bytes: normalizedPerActivationDatabaseBytes,
+    per_activation_total_estimated_bytes: perActivationTotalEstimatedBytes,
+    estimated_activaciones_with_photo_total: estimatedTotal,
+    estimated_activaciones_with_photo_remaining: estimatedRemaining,
+    estimated_remaining_by_database: remainingByDatabase,
+    estimated_remaining_by_storage: remainingByStorage,
+    limiting_factor: limitingFactor,
+    unavailable_reason: unavailableReasons.length ? unavailableReasons.join(' ') : null,
+  }
+}
+
 export function createAdminApiApp({ env = process.env } = {}) {
   assertRequiredEnv(env)
 
@@ -709,6 +904,23 @@ export function createAdminApiApp({ env = process.env } = {}) {
         return
       }
 
+      const { count: activacionesWithPhotoCount, error: activacionesWithPhotoCountErr } =
+        await adminSupabase
+          .from('activaciones')
+          .select('id', { count: 'exact', head: true })
+          .not('foto_url', 'is', null)
+          .neq('foto_url', '')
+
+      if (activacionesWithPhotoCountErr) {
+        jsonError(
+          res,
+          500,
+          'No se pudo obtener conteo de activaciones con foto.',
+          activacionesWithPhotoCountErr.message
+        )
+        return
+      }
+
       let bucketUsage = null
       try {
         bucketUsage = await calculateBucketUsageBytes(adminSupabase, activacionesBucket)
@@ -750,6 +962,17 @@ export function createAdminApiApp({ env = process.env } = {}) {
         }
       }
 
+      let estimatedDatabase = null
+      let estimationUnavailableReason = null
+      try {
+        estimatedDatabase = await estimateDatabaseUsageFromActivaciones(adminSupabase, {
+          activacionesCount: activacionesCount ?? 0,
+          databaseLimitBytes,
+        })
+      } catch (error) {
+        estimationUnavailableReason = error instanceof Error ? error.message : null
+      }
+
       const storageRemainingBytes =
         storageLimitBytes == null ? null : Math.max(0, storageLimitBytes - bucketUsage.totalBytes)
       const storageUsagePercent =
@@ -757,19 +980,39 @@ export function createAdminApiApp({ env = process.env } = {}) {
           ? null
           : Number(((bucketUsage.totalBytes / storageLimitBytes) * 100).toFixed(2))
 
+      const effectiveDatabaseUsedBytes =
+        databaseSizeBytes ?? estimatedDatabase?.estimated_database_used_bytes ?? null
       const databaseRemainingBytes =
-        databaseLimitBytes == null || databaseSizeBytes == null
+        databaseLimitBytes == null || effectiveDatabaseUsedBytes == null
           ? null
-          : Math.max(0, databaseLimitBytes - databaseSizeBytes)
+          : Math.max(0, databaseLimitBytes - effectiveDatabaseUsedBytes)
       const databaseUsagePercent =
-        databaseLimitBytes == null || databaseLimitBytes <= 0 || databaseSizeBytes == null
+        databaseLimitBytes == null || databaseLimitBytes <= 0 || effectiveDatabaseUsedBytes == null
           ? null
-          : Number(((databaseSizeBytes / databaseLimitBytes) * 100).toFixed(2))
+          : Number(((effectiveDatabaseUsedBytes / databaseLimitBytes) * 100).toFixed(2))
+
+      const perActivationDatabaseBytes =
+        estimatedDatabase?.per_activation_estimated_bytes > 0
+          ? estimatedDatabase.per_activation_estimated_bytes
+          : Number(activacionesCount ?? 0) > 0 && effectiveDatabaseUsedBytes != null
+            ? Math.max(1, Math.round(effectiveDatabaseUsedBytes / Number(activacionesCount ?? 0)))
+            : null
+
+      const combinedCapacityEstimation = estimateCombinedActivationCapacity({
+        activacionesCount: activacionesCount ?? 0,
+        activacionesWithPhotoCount: activacionesWithPhotoCount ?? 0,
+        storageObjectsCount: bucketUsage.totalObjects,
+        storageUsedBytes: bucketUsage.totalBytes,
+        storageRemainingBytes,
+        databaseRemainingBytes,
+        perActivationDatabaseBytes,
+      })
 
       res.json({
         summary: {
           bucket: activacionesBucket,
           activaciones_count: activacionesCount ?? 0,
+          activaciones_with_photo_count: activacionesWithPhotoCount ?? 0,
           storage_objects_count: bucketUsage.totalObjects,
           storage_used_bytes: bucketUsage.totalBytes,
           storage_limit_bytes: storageLimitBytes,
@@ -777,14 +1020,23 @@ export function createAdminApiApp({ env = process.env } = {}) {
           storage_remaining_bytes: storageRemainingBytes,
           storage_usage_percent: storageUsagePercent,
           database_size_bytes: databaseSizeBytes,
+          database_used_effective_bytes: effectiveDatabaseUsedBytes,
           database_limit_bytes: databaseLimitBytes,
           database_limit_source: databaseLimitSource,
           database_remaining_bytes: databaseRemainingBytes,
           database_usage_percent: databaseUsagePercent,
           database_size_source:
-            databaseSizeBytes == null ? null : 'rpc:get_database_size_bytes',
+            databaseSizeBytes == null
+              ? estimatedDatabase
+                ? 'estimate:activaciones_avg_row'
+                : null
+              : 'rpc:get_database_size_bytes',
           database_size_unavailable_reason:
             databaseSizeBytes == null ? databaseSizeUnavailableReason : null,
+          database_estimation: estimatedDatabase,
+          database_estimation_unavailable_reason:
+            estimatedDatabase == null ? estimationUnavailableReason : null,
+          combined_capacity_estimation: combinedCapacityEstimation,
           plan_reference: SUPABASE_FREE_PLAN_REFERENCE,
         },
       })

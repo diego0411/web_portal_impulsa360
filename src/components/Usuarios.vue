@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { adminApiRequest } from '../lib/adminApiClient'
+import { useAdminApiAuth } from '../lib/adminAuthStore'
 import {
   notifyError,
   notifySuccess,
@@ -18,8 +19,12 @@ const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(
   ''
 )
 
-const apiUser = ref('')
-const apiPass = ref('')
+const {
+  username: apiUser,
+  password: apiPass,
+  hasCredentials: puedeConectar,
+  setCredentials,
+} = useAdminApiAuth()
 const conectado = ref(false)
 const conectando = ref(false)
 const authErrorMsg = ref(null)
@@ -56,10 +61,6 @@ const credencialesApi = computed(() => ({
   username: apiUser.value,
   password: apiPass.value,
 }))
-
-const puedeConectar = computed(() => {
-  return Boolean(apiUser.value.trim() && apiPass.value)
-})
 
 async function requestAdmin(path, options = {}) {
   return adminApiRequest({
@@ -98,6 +99,7 @@ async function conectarApi() {
 
   try {
     await requestAdmin('/admin/healthz')
+    setCredentials(apiUser.value, apiPass.value)
     conectado.value = true
     await cargarUsuarios()
     notifySuccess('Conexion con API admin establecida.')

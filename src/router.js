@@ -22,6 +22,10 @@ const routes = [
     path: '/notificaciones',
     component: () => import('./components/Notificaciones.vue'),
   },
+  {
+    path: '/capacidad',
+    component: () => import('./components/Capacidad.vue'),
+  },
 ]
 
 export const router = createRouter({
