@@ -166,6 +166,16 @@ function parseBasicAuth(header) {
   }
 }
 
+function parseLimit(value, { fallback = 50, min = 1, max = 200 } = {}) {
+  const parsed = Number.parseInt(String(value ?? ''), 10)
+
+  if (!Number.isInteger(parsed)) {
+    return fallback
+  }
+
+  return Math.min(max, Math.max(min, parsed))
+}
+
 export function createAdminApiApp({ env = process.env } = {}) {
   assertRequiredEnv(env)
 
@@ -223,6 +233,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       return
     }
 
+    req.adminUser = parsed.username
     next()
   }
 
@@ -485,6 +496,271 @@ export function createAdminApiApp({ env = process.env } = {}) {
       }
 
       res.json({ ok: true, tableRecordDeleted })
+    })
+  )
+
+  app.get(
+    '/admin/notifications',
+    asyncRoute(async (req, res) => {
+      const limit = parseLimit(req.query?.limit, { fallback: 60, min: 1, max: 300 })
+
+      const { data: notifications, error: notificationsErr } = await adminSupabase
+        .from('notificaciones')
+        .select('id, titulo, mensaje, alcance, usuario_objetivo_id, creado_por, created_at')
+        .order('created_at', { ascending: false })
+        .limit(limit)
+
+      if (notificationsErr) {
+        jsonError(
+          res,
+          500,
+          'No se pudo obtener historial de notificaciones.',
+          notificationsErr.message
+        )
+        return
+      }
+
+      if (!notifications?.length) {
+        res.json({ notifications: [] })
+        return
+      }
+
+      const notificationIds = notifications.map((item) => item.id)
+      const userTargetIds = [
+        ...new Set(notifications.map((item) => item.usuario_objetivo_id).filter(Boolean)),
+      ]
+
+      const [{ data: recipientsRows, error: recipientsErr }, { data: usersRows, error: usersErr }] =
+        await Promise.all([
+          adminSupabase
+            .from('notificaciones_destinatarios')
+            .select('notificacion_id, leida_at')
+            .in('notificacion_id', notificationIds),
+          userTargetIds.length
+            ? adminSupabase
+                .from('activadores')
+                .select('usuario_id, nombre, email')
+                .in('usuario_id', userTargetIds)
+            : Promise.resolve({ data: [], error: null }),
+        ])
+
+      if (recipientsErr) {
+        jsonError(
+          res,
+          500,
+          'No se pudo obtener estado de destinatarios.',
+          recipientsErr.message
+        )
+        return
+      }
+
+      if (usersErr) {
+        jsonError(
+          res,
+          500,
+          'No se pudo obtener detalle de usuarios objetivo.',
+          usersErr.message
+        )
+        return
+      }
+
+      const statsMap = {}
+      for (const row of recipientsRows ?? []) {
+        if (!statsMap[row.notificacion_id]) {
+          statsMap[row.notificacion_id] = { total: 0, read: 0 }
+        }
+        statsMap[row.notificacion_id].total += 1
+        if (row.leida_at) {
+          statsMap[row.notificacion_id].read += 1
+        }
+      }
+
+      const usersMap = Object.fromEntries(
+        (usersRows ?? []).map((item) => [
+          item.usuario_id,
+          {
+            usuario_id: item.usuario_id,
+            nombre: item.nombre ?? null,
+            email: item.email ?? null,
+          },
+        ])
+      )
+
+      const payload = notifications.map((item) => {
+        const stats = statsMap[item.id] ?? { total: 0, read: 0 }
+        return {
+          id: item.id,
+          titulo: item.titulo,
+          mensaje: item.mensaje,
+          alcance: item.alcance,
+          usuarioObjetivo: item.usuario_objetivo_id
+            ? usersMap[item.usuario_objetivo_id] ?? {
+                usuario_id: item.usuario_objetivo_id,
+                nombre: null,
+                email: null,
+              }
+            : null,
+          creado_por: item.creado_por,
+          created_at: item.created_at,
+          destinatarios_total: stats.total,
+          destinatarios_leidos: stats.read,
+          destinatarios_pendientes: Math.max(0, stats.total - stats.read),
+        }
+      })
+
+      res.json({ notifications: payload })
+    })
+  )
+
+  app.post(
+    '/admin/notifications',
+    asyncRoute(async (req, res) => {
+      const rawTitle = req.body?.titulo
+      const rawMessage = req.body?.mensaje
+      const rawScope = req.body?.alcance
+      const rawTargetUserId = req.body?.usuarioObjetivoId
+
+      const title = normalizeText(rawTitle)
+      const message = normalizeText(rawMessage)
+      const scope = rawScope === 'user' ? 'user' : rawScope === 'all' ? 'all' : ''
+      const targetUserId = normalizeText(rawTargetUserId)
+      const createdBy = normalizeText(req.adminUser) || 'admin'
+
+      if (title.length < 3 || title.length > 120) {
+        jsonError(res, 400, 'El titulo debe tener entre 3 y 120 caracteres.')
+        return
+      }
+
+      if (message.length < 3 || message.length > 2000) {
+        jsonError(res, 400, 'El mensaje debe tener entre 3 y 2000 caracteres.')
+        return
+      }
+
+      if (!scope) {
+        jsonError(res, 400, 'alcance invalido. Usa "all" o "user".')
+        return
+      }
+
+      let recipients = []
+
+      if (scope === 'all') {
+        const { data, error } = await adminSupabase
+          .from('activadores')
+          .select('usuario_id, nombre, email')
+          .not('usuario_id', 'is', null)
+
+        if (error) {
+          jsonError(res, 500, 'No se pudo obtener lista de destinatarios.', error.message)
+          return
+        }
+
+        const dedupedRecipients = new Map()
+        for (const item of data ?? []) {
+          if (item?.usuario_id && !dedupedRecipients.has(item.usuario_id)) {
+            dedupedRecipients.set(item.usuario_id, item)
+          }
+        }
+
+        recipients = [...dedupedRecipients.values()]
+      } else {
+        if (!targetUserId) {
+          jsonError(res, 400, 'usuarioObjetivoId es obligatorio para alcance user.')
+          return
+        }
+
+        const { data, error } = await adminSupabase
+          .from('activadores')
+          .select('usuario_id, nombre, email')
+          .eq('usuario_id', targetUserId)
+          .maybeSingle()
+
+        if (error) {
+          jsonError(res, 500, 'No se pudo validar el usuario objetivo.', error.message)
+          return
+        }
+
+        if (!data?.usuario_id) {
+          jsonError(res, 404, 'No se encontro el usuario objetivo.')
+          return
+        }
+
+        recipients = [data]
+      }
+
+      if (!recipients.length) {
+        jsonError(res, 400, 'No hay destinatarios disponibles para este envio.')
+        return
+      }
+
+      const notificationPayload = {
+        titulo: title,
+        mensaje: message,
+        alcance: scope,
+        usuario_objetivo_id: scope === 'user' ? targetUserId : null,
+        creado_por: createdBy,
+      }
+
+      const { data: insertedNotification, error: insertNotificationErr } = await adminSupabase
+        .from('notificaciones')
+        .insert(notificationPayload)
+        .select('id, titulo, mensaje, alcance, usuario_objetivo_id, creado_por, created_at')
+        .single()
+
+      if (insertNotificationErr || !insertedNotification?.id) {
+        jsonError(
+          res,
+          500,
+          'No se pudo registrar la notificacion.',
+          insertNotificationErr?.message
+        )
+        return
+      }
+
+      const recipientsPayload = recipients.map((item) => ({
+        notificacion_id: insertedNotification.id,
+        usuario_id: item.usuario_id,
+      }))
+
+      const { error: insertRecipientsErr } = await adminSupabase
+        .from('notificaciones_destinatarios')
+        .insert(recipientsPayload)
+
+      if (insertRecipientsErr) {
+        await adminSupabase
+          .from('notificaciones')
+          .delete()
+          .eq('id', insertedNotification.id)
+
+        jsonError(
+          res,
+          500,
+          'No se pudo registrar destinatarios de la notificacion.',
+          insertRecipientsErr.message
+        )
+        return
+      }
+
+      res.status(201).json({
+        notification: {
+          id: insertedNotification.id,
+          titulo: insertedNotification.titulo,
+          mensaje: insertedNotification.mensaje,
+          alcance: insertedNotification.alcance,
+          usuarioObjetivo:
+            scope === 'user'
+              ? {
+                  usuario_id: targetUserId,
+                  nombre: recipients[0]?.nombre ?? null,
+                  email: recipients[0]?.email ?? null,
+                }
+              : null,
+          creado_por: insertedNotification.creado_por,
+          created_at: insertedNotification.created_at,
+          destinatarios_total: recipientsPayload.length,
+          destinatarios_leidos: 0,
+          destinatarios_pendientes: recipientsPayload.length,
+        },
+      })
     })
   )
 

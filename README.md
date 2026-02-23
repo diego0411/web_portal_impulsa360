@@ -80,6 +80,8 @@ npm run build
 - `POST /admin/users` (requiere Basic Auth)
 - `PATCH /admin/users/:userId` (requiere Basic Auth, acepta `email` y `password` opcionales)
 - `DELETE /admin/users/:userId` (requiere Basic Auth)
+- `GET /admin/notifications` (requiere Basic Auth)
+- `POST /admin/notifications` (requiere Basic Auth)
 
 En Vercel (API serverless) se exponen con prefijo `/api`:
 
@@ -89,6 +91,51 @@ En Vercel (API serverless) se exponen con prefijo `/api`:
 - `POST /api/admin/users`
 - `PATCH /api/admin/users/:userId`
 - `DELETE /api/admin/users/:userId`
+- `GET /api/admin/notifications`
+- `POST /api/admin/notifications`
+
+## Modulo de Notificaciones Internas
+
+- Ruta web: `/notificaciones`
+- Funcionalidad:
+  - Envio a todos los usuarios.
+  - Envio a usuario especifico.
+  - Historial de envios con total/leidas/pendientes.
+
+## Supabase por Etapas
+
+### Etapa 1 (obligatoria ahora)
+
+1. Abre `SQL Editor` en Supabase.
+2. Ejecuta el contenido de `supabase/notificaciones.sql`.
+3. Verifica que existan tablas:
+   - `public.notificaciones`
+   - `public.notificaciones_destinatarios`
+4. Verifica rapidamente que la estructura responde:
+
+```sql
+select count(*) as total_notificaciones from public.notificaciones;
+select count(*) as total_destinatarios from public.notificaciones_destinatarios;
+```
+
+### Etapa 1.1 (validacion funcional web)
+
+1. En la web, entra a `/notificaciones`.
+2. Conecta API admin con Basic Auth.
+3. Envia una notificacion de prueba a `Todos`.
+4. Confirma en SQL:
+
+```sql
+select id, titulo, alcance, created_at
+from public.notificaciones
+order by created_at desc
+limit 5;
+```
+
+### Etapa 2 (para app movil)
+
+El mismo SQL ya incluye politicas RLS para que cada usuario autenticado vea solo sus notificaciones y pueda marcar sus lecturas.
+No requiere cambios extra de backend para el modulo web.
 
 ## Despliegue en Vercel (Frontend + API)
 
@@ -117,4 +164,3 @@ Con eso no necesitas ejecutar la API en terminal para crear/editar/eliminar usua
 ## Nota de despliegue
 
 No expongas `SUPABASE_SERVICE_ROLE_KEY` en cliente ni en repositorios publicos.
-# web_portal_impulsa360

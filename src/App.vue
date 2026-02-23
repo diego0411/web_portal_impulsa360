@@ -19,6 +19,7 @@ import FeedbackCenter from './components/FeedbackCenter.vue'
         <router-link to="/impulsadores">Impulsadores</router-link>
         <router-link to="/metricas">Metricas</router-link>
         <router-link to="/usuarios">Usuarios</router-link>
+        <router-link to="/notificaciones">Notificaciones</router-link>
       </nav>
     </header>
 

@@ -18,6 +18,10 @@ const routes = [
     path: '/usuarios',
     component: () => import('./components/Usuarios.vue'),
   },
+  {
+    path: '/notificaciones',
+    component: () => import('./components/Notificaciones.vue'),
+  },
 ]
 
 export const router = createRouter({
