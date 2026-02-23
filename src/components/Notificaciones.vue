@@ -233,16 +233,22 @@ async function enviarNotificacion() {
     <div class="forms-grid">
       <div class="formulario-registro">
         <h2 class="subtitulo">Conexion API Admin</h2>
-        <div class="formulario-campos">
-          <input v-model="apiUser" placeholder="Usuario API" class="input-texto" />
+        <form class="formulario-campos" @submit.prevent="conectarApi">
+          <input
+            v-model="apiUser"
+            placeholder="Usuario API"
+            class="input-texto"
+            @keydown.enter.prevent="conectarApi"
+          />
           <input
             v-model="apiPass"
             type="password"
             placeholder="Password API"
             class="input-texto"
+            @keydown.enter.prevent="conectarApi"
           />
           <button
-            @click="conectarApi"
+            type="submit"
             class="boton boton-primario"
             :disabled="conectando || !puedeConectar"
           >
@@ -250,12 +256,12 @@ async function enviarNotificacion() {
           </button>
           <p v-if="authErrorMsg" class="mensaje-error">{{ authErrorMsg }}</p>
           <p v-else-if="conectado">Conectado a {{ apiBaseUrl }}</p>
-        </div>
+        </form>
       </div>
 
       <div v-if="conectado" class="formulario-registro">
         <h2 class="subtitulo">Nuevo Envio</h2>
-        <div class="formulario-campos">
+        <form class="formulario-campos" @submit.prevent="enviarNotificacion">
           <label>
             <span class="field-label">Titulo</span>
             <input
@@ -264,6 +270,7 @@ async function enviarNotificacion() {
               type="text"
               maxlength="120"
               placeholder="Ej: Recordatorio de corte diario"
+              @keydown.enter.prevent="enviarNotificacion"
             />
           </label>
 
@@ -301,13 +308,13 @@ async function enviarNotificacion() {
           </label>
 
           <button
-            @click="enviarNotificacion"
+            type="submit"
             class="boton boton-primario"
             :disabled="enviando"
           >
             {{ enviando ? 'Enviando...' : 'Enviar Notificacion' }}
           </button>
-        </div>
+        </form>
       </div>
     </div>
 

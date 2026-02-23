@@ -295,16 +295,22 @@ async function eliminarUsuario(usuario) {
     <div class="forms-grid">
       <div class="formulario-registro">
         <h2 class="subtitulo">Conexion API Admin</h2>
-        <div class="formulario-campos">
-          <input v-model="apiUser" placeholder="Usuario API" class="input-texto" />
+        <form class="formulario-campos" @submit.prevent="conectarApi">
+          <input
+            v-model="apiUser"
+            placeholder="Usuario API"
+            class="input-texto"
+            @keydown.enter.prevent="conectarApi"
+          />
           <input
             v-model="apiPass"
             type="password"
             placeholder="Password API"
             class="input-texto"
+            @keydown.enter.prevent="conectarApi"
           />
           <button
-            @click="conectarApi"
+            type="submit"
             class="boton boton-primario"
             :disabled="conectando || !puedeConectar"
           >
@@ -312,18 +318,40 @@ async function eliminarUsuario(usuario) {
           </button>
           <p v-if="authErrorMsg" class="mensaje-error">{{ authErrorMsg }}</p>
           <p v-else-if="conectado">Conectado a {{ apiBaseUrl }}</p>
-        </div>
+        </form>
       </div>
 
       <div v-if="conectado" class="formulario-registro">
         <h2 class="subtitulo">Registrar Usuario</h2>
-        <div class="formulario-campos">
-          <input v-model="email" type="email" placeholder="Correo electronico" class="input-texto" />
-          <input v-model="password" type="password" placeholder="Contrasena" class="input-texto" />
-          <input v-model="nombre" placeholder="Nombre completo" class="input-texto" />
-          <input v-model="plaza" placeholder="Plaza (opcional)" class="input-texto" />
-          <button @click="registrarUsuario" class="boton boton-primario">Registrar</button>
-        </div>
+        <form class="formulario-campos" @submit.prevent="registrarUsuario">
+          <input
+            v-model="email"
+            type="email"
+            placeholder="Correo electronico"
+            class="input-texto"
+            @keydown.enter.prevent="registrarUsuario"
+          />
+          <input
+            v-model="password"
+            type="password"
+            placeholder="Contrasena"
+            class="input-texto"
+            @keydown.enter.prevent="registrarUsuario"
+          />
+          <input
+            v-model="nombre"
+            placeholder="Nombre completo"
+            class="input-texto"
+            @keydown.enter.prevent="registrarUsuario"
+          />
+          <input
+            v-model="plaza"
+            placeholder="Plaza (opcional)"
+            class="input-texto"
+            @keydown.enter.prevent="registrarUsuario"
+          />
+          <button type="submit" class="boton boton-primario">Registrar</button>
+        </form>
       </div>
     </div>
 
@@ -389,19 +417,32 @@ async function eliminarUsuario(usuario) {
               <td>{{ usuario.usuario_id }}</td>
               <td>
                 <div v-if="editandoId === usuario.usuario_id">
-                  <input v-model="nombreEdit" class="input-editar" />
+                  <input
+                    v-model="nombreEdit"
+                    class="input-editar"
+                    @keydown.enter.prevent="guardarEdicion"
+                  />
                 </div>
                 <div v-else>{{ usuario.nombre }}</div>
               </td>
               <td>
                 <div v-if="editandoId === usuario.usuario_id">
-                  <input v-model="emailEdit" type="email" class="input-editar" />
+                  <input
+                    v-model="emailEdit"
+                    type="email"
+                    class="input-editar"
+                    @keydown.enter.prevent="guardarEdicion"
+                  />
                 </div>
                 <div v-else>{{ usuario.email }}</div>
               </td>
               <td>
                 <div v-if="editandoId === usuario.usuario_id">
-                  <input v-model="plazaEdit" class="input-editar" />
+                  <input
+                    v-model="plazaEdit"
+                    class="input-editar"
+                    @keydown.enter.prevent="guardarEdicion"
+                  />
                 </div>
                 <div v-else>{{ usuario.plaza }}</div>
               </td>
@@ -412,6 +453,7 @@ async function eliminarUsuario(usuario) {
                     type="password"
                     class="input-editar"
                     placeholder="Opcional (min. 6)"
+                    @keydown.enter.prevent="guardarEdicion"
                   />
                 </div>
                 <div v-else>-</div>
