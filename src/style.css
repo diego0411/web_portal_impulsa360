@@ -949,7 +949,7 @@ button {
 
 .capacity-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 0.65rem;
 }
 
@@ -965,24 +965,44 @@ button {
 .capacity-label {
   margin: 0;
   color: var(--ru-ink-soft);
-  font-size: 0.66rem;
+  font-size: 0.64rem;
   text-transform: uppercase;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.09em;
   font-weight: 700;
 }
 
 .capacity-value {
   margin: 0;
   color: var(--ru-ink);
-  font-size: 1.05rem;
+  font-size: 1.18rem;
   font-family: 'Space Grotesk', 'Sora', sans-serif;
   font-weight: 700;
+  line-height: 1.05;
 }
 
 .capacity-detail {
   margin: 0;
   color: #45617c;
-  font-size: 0.74rem;
+  font-size: 0.72rem;
+}
+
+.capacity-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.36rem;
+}
+
+.capacity-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.22rem 0.5rem;
+  border: 1px solid rgba(72, 111, 148, 0.22);
+  background: #ffffff;
+  color: #24496d;
+  font-size: 0.67rem;
+  font-weight: 600;
+  line-height: 1.1;
 }
 
 .acciones {

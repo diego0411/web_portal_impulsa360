@@ -80,16 +80,6 @@ const databaseUsagePercentLabel = computed(() => {
   return `${percent.toFixed(1)}%`
 })
 
-const storageLimitConfigured = computed(() => {
-  const limit = storageSummary.value?.storage_limit_bytes
-  return limit !== null && limit !== undefined && Number.isFinite(Number(limit)) && Number(limit) > 0
-})
-
-const databaseLimitConfigured = computed(() => {
-  const limit = storageSummary.value?.database_limit_bytes
-  return limit !== null && limit !== undefined && Number.isFinite(Number(limit)) && Number(limit) > 0
-})
-
 const databaseSizeAvailable = computed(() => {
   const size = storageSummary.value?.database_size_bytes
   return size !== null && size !== undefined && Number.isFinite(Number(size)) && Number(size) >= 0
@@ -97,20 +87,6 @@ const databaseSizeAvailable = computed(() => {
 
 const planReference = computed(() => {
   return storageSummary.value?.plan_reference ?? null
-})
-
-const storageLimitSourceLabel = computed(() => {
-  const source = storageSummary.value?.storage_limit_source
-  return source === 'env_admin_storage_limit_mb'
-    ? 'Limite personalizado'
-    : 'Limite plan Free'
-})
-
-const databaseLimitSourceLabel = computed(() => {
-  const source = storageSummary.value?.database_limit_source
-  return source === 'env_admin_database_limit_mb'
-    ? 'Limite personalizado'
-    : 'Limite plan Free'
 })
 
 function csvEscape(value) {
@@ -609,52 +585,39 @@ async function exportarAExcelConImagenes() {
         </div>
         <div v-else class="capacity-grid">
           <div class="capacity-card">
-            <p class="capacity-label">Fotos en bucket</p>
+            <p class="capacity-label">Fotos usadas</p>
             <p class="capacity-value">{{ formatBytes(storageSummary.storage_used_bytes) }}</p>
             <p class="capacity-detail">
-              {{ storageSummary.storage_objects_count }} archivos · uso {{ storageUsagePercentLabel }}
+              {{ storageUsagePercentLabel }} del limite · {{ storageSummary.storage_objects_count }} archivos
             </p>
           </div>
           <div class="capacity-card">
-            <p class="capacity-label">Restante estimado (fotos)</p>
+            <p class="capacity-label">Disponible (fotos)</p>
             <p class="capacity-value">{{ formatBytes(storageSummary.storage_remaining_bytes) }}</p>
-            <p v-if="storageLimitConfigured" class="capacity-detail">
-              {{ storageLimitSourceLabel }}:
-              {{ formatBytes(storageSummary.storage_limit_bytes) }}
-            </p>
-            <p v-else class="capacity-detail">
-              Define `ADMIN_STORAGE_LIMIT_MB` para calcular restante real.
+            <p class="capacity-detail">
+              de {{ formatBytes(storageSummary.storage_limit_bytes) }}
             </p>
           </div>
-          <div class="capacity-card">
-            <p class="capacity-label">Tamano base de datos</p>
+          <div v-if="databaseSizeAvailable" class="capacity-card">
+            <p class="capacity-label">Base de datos</p>
             <p class="capacity-value">{{ formatBytes(storageSummary.database_size_bytes) }}</p>
-            <p v-if="databaseLimitConfigured && databaseSizeAvailable" class="capacity-detail">
-              Uso {{ databaseUsagePercentLabel }} · disponible {{ formatBytes(storageSummary.database_remaining_bytes) }}
-            </p>
-            <p v-else class="capacity-detail">
-              {{ databaseLimitSourceLabel }}: {{ formatBytes(storageSummary.database_limit_bytes) }}
-            </p>
-            <p
-              v-if="storageSummary.database_size_unavailable_reason"
-              class="capacity-detail"
-            >
-              Fuente real no disponible: {{ storageSummary.database_size_unavailable_reason }}
+            <p class="capacity-detail">
+              {{ databaseUsagePercentLabel }} en uso · disponible {{ formatBytes(storageSummary.database_remaining_bytes) }}
             </p>
           </div>
           <div v-if="planReference" class="capacity-card">
-            <p class="capacity-label">Plan de referencia</p>
+            <p class="capacity-label">Plan</p>
             <p class="capacity-value">{{ planReference.name }}</p>
-            <p class="capacity-detail">{{ planReference.api_requests }}</p>
-            <p class="capacity-detail">MAU: {{ formatNumber(planReference.monthly_active_users_limit) }}</p>
-            <p class="capacity-detail">DB: {{ formatBytes(planReference.database_limit_bytes) }}</p>
-            <p class="capacity-detail">Storage: {{ formatBytes(planReference.file_storage_limit_bytes) }}</p>
-            <p class="capacity-detail">
-              Egress: {{ formatBytes(planReference.egress_limit_bytes) }} · Cache:
-              {{ formatBytes(planReference.cached_egress_limit_bytes) }}
-            </p>
-            <p class="capacity-detail">CPU {{ planReference.cpu_tier }} · RAM {{ planReference.shared_ram_mb }} MB</p>
-            <p class="capacity-detail">{{ planReference.support }}</p>
+            <div class="capacity-chips">
+              <span class="capacity-chip">API ilimitada</span>
+              <span class="capacity-chip">MAU {{ formatNumber(planReference.monthly_active_users_limit) }}</span>
+              <span class="capacity-chip">DB {{ formatBytes(planReference.database_limit_bytes) }}</span>
+              <span class="capacity-chip">Storage {{ formatBytes(planReference.file_storage_limit_bytes) }}</span>
+              <span class="capacity-chip">Egress {{ formatBytes(planReference.egress_limit_bytes) }}</span>
+              <span class="capacity-chip">Cache {{ formatBytes(planReference.cached_egress_limit_bytes) }}</span>
+              <span class="capacity-chip">RAM {{ planReference.shared_ram_mb }} MB</span>
+              <span class="capacity-chip">{{ planReference.support }}</span>
+            </div>
           </div>
         </div>
       </div>
