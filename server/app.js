@@ -13,6 +13,20 @@ const DEFAULT_ALLOWED_ORIGINS = [
   'http://localhost:5173',
   'http://localhost:5174',
 ]
+const MB = 1024 * 1024
+const GB = 1024 * MB
+const SUPABASE_FREE_PLAN_REFERENCE = Object.freeze({
+  name: 'Supabase Free',
+  api_requests: 'Unlimited API requests',
+  monthly_active_users_limit: 50000,
+  database_limit_bytes: 500 * MB,
+  shared_ram_mb: 500,
+  cpu_tier: 'shared',
+  egress_limit_bytes: 5 * GB,
+  cached_egress_limit_bytes: 5 * GB,
+  file_storage_limit_bytes: 1 * GB,
+  support: 'Community support',
+})
 
 function normalizeText(value) {
   return typeof value === 'string' ? value.trim() : ''
@@ -355,8 +369,16 @@ export function createAdminApiApp({ env = process.env } = {}) {
   const allowedOrigins = buildAllowedOrigins(env.ADMIN_API_CORS_ORIGIN)
   const allowedOriginMatchers = allowedOrigins.map(buildOriginMatcher)
   const activacionesBucket = resolveActivacionesBucket(env)
-  const storageLimitBytes = parseOptionalMegabytes(env.ADMIN_STORAGE_LIMIT_MB)
-  const databaseLimitBytes = parseOptionalMegabytes(env.ADMIN_DATABASE_LIMIT_MB)
+  const configuredStorageLimitBytes = parseOptionalMegabytes(env.ADMIN_STORAGE_LIMIT_MB)
+  const configuredDatabaseLimitBytes = parseOptionalMegabytes(env.ADMIN_DATABASE_LIMIT_MB)
+  const storageLimitBytes =
+    configuredStorageLimitBytes ?? SUPABASE_FREE_PLAN_REFERENCE.file_storage_limit_bytes
+  const databaseLimitBytes =
+    configuredDatabaseLimitBytes ?? SUPABASE_FREE_PLAN_REFERENCE.database_limit_bytes
+  const storageLimitSource =
+    configuredStorageLimitBytes == null ? 'supabase_free_default' : 'env_admin_storage_limit_mb'
+  const databaseLimitSource =
+    configuredDatabaseLimitBytes == null ? 'supabase_free_default' : 'env_admin_database_limit_mb'
   const adminSupabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
     auth: {
       autoRefreshToken: false,
@@ -751,16 +773,19 @@ export function createAdminApiApp({ env = process.env } = {}) {
           storage_objects_count: bucketUsage.totalObjects,
           storage_used_bytes: bucketUsage.totalBytes,
           storage_limit_bytes: storageLimitBytes,
+          storage_limit_source: storageLimitSource,
           storage_remaining_bytes: storageRemainingBytes,
           storage_usage_percent: storageUsagePercent,
           database_size_bytes: databaseSizeBytes,
           database_limit_bytes: databaseLimitBytes,
+          database_limit_source: databaseLimitSource,
           database_remaining_bytes: databaseRemainingBytes,
           database_usage_percent: databaseUsagePercent,
           database_size_source:
             databaseSizeBytes == null ? null : 'rpc:get_database_size_bytes',
           database_size_unavailable_reason:
             databaseSizeBytes == null ? databaseSizeUnavailableReason : null,
+          plan_reference: SUPABASE_FREE_PLAN_REFERENCE,
         },
       })
     })

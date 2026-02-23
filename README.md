@@ -34,8 +34,8 @@ Variables backend (API admin):
 - `ADMIN_API_PORT` (opcional, por defecto `8787`)
 - `ADMIN_API_CORS_ORIGIN` (opcional, por defecto `http://localhost:5173,http://localhost:5174`)
 - `ADMIN_STORAGE_BUCKET_ACTIVACIONES` (opcional, por defecto usa `VITE_STORAGE_BUCKET_ACTIVACIONES` o `fotos-activaciones`)
-- `ADMIN_STORAGE_LIMIT_MB` (opcional, para mostrar restante estimado de fotos)
-- `ADMIN_DATABASE_LIMIT_MB` (opcional, para mostrar restante estimado de BD)
+- `ADMIN_STORAGE_LIMIT_MB` (opcional, por defecto `1024` en base al plan Free)
+- `ADMIN_DATABASE_LIMIT_MB` (opcional, por defecto `500` en base al plan Free)
 
 ## Instalacion
 
@@ -109,6 +109,18 @@ En Vercel (API serverless) se exponen con prefijo `/api`:
   - Eliminar foto asociada en Storage al borrar la activacion.
   - Indicador de capacidad (uso de bucket y restante estimado por limite configurado).
 
+## Referencia Plan Free Integrada
+
+El modulo de capacidad toma como referencia por defecto:
+- API requests: ilimitadas.
+- MAU: 50.000.
+- Base de datos: 500 MB.
+- Storage de archivos: 1 GB.
+- Egress: 5 GB.
+- Cached egress: 5 GB.
+- CPU compartida y 500 MB RAM.
+- Soporte comunitario.
+
 ## Modulo de Notificaciones Internas
 
 - Ruta web: `/notificaciones`
@@ -175,8 +187,8 @@ No requiere cambios extra de backend para el modulo web.
    - `ADMIN_BASIC_PASS`
    - `ADMIN_API_CORS_ORIGIN` (ej: `https://tu-dominio.com,https://*.vercel.app`)
    - `ADMIN_STORAGE_BUCKET_ACTIVACIONES` (opcional)
-   - `ADMIN_STORAGE_LIMIT_MB` (opcional, ejemplo `1024`)
-   - `ADMIN_DATABASE_LIMIT_MB` (opcional, ejemplo `512`)
+   - `ADMIN_STORAGE_LIMIT_MB` (opcional, ejemplo `1024`, por defecto Free)
+   - `ADMIN_DATABASE_LIMIT_MB` (opcional, ejemplo `500`, por defecto Free)
 4. Deploy.
 
 Con eso no necesitas ejecutar la API en terminal para crear/editar/eliminar usuarios.
