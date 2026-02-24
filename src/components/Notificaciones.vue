@@ -34,6 +34,7 @@ const filtroAlcance = ref('')
 const formatDateTime = new Intl.DateTimeFormat('es-BO', {
   dateStyle: 'short',
   timeStyle: 'short',
+  timeZone: 'America/La_Paz',
 })
 
 const usuariosOrdenados = computed(() => {

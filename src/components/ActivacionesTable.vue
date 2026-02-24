@@ -24,6 +24,11 @@ const storageBucket =
   import.meta.env.VITE_STORAGE_BUCKET_ACTIVACIONES ?? 'fotos-activaciones'
 const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(/\/$/, '')
 let excelJsModulePromise = null
+const boliviaDateTimeFormatter = new Intl.DateTimeFormat('es-BO', {
+  dateStyle: 'short',
+  timeStyle: 'medium',
+  timeZone: 'America/La_Paz',
+})
 
 const filtroPlaza = ref('')
 const filtroDistrito = ref('')
@@ -134,6 +139,19 @@ function getErrorMessage(error) {
   return 'Se produjo un error inesperado.'
 }
 
+function formatCreatedAtBolivia(value, { emptyValue = '-' } = {}) {
+  if (!value) {
+    return emptyValue
+  }
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return String(value)
+  }
+
+  return boliviaDateTimeFormatter.format(date)
+}
+
 async function requestAdmin(path, options = {}) {
   return adminApiRequest({
     baseUrl: apiBaseUrl,
@@ -229,7 +247,7 @@ function getDatosParaExportar() {
 
 const columnasExportacion = [
   ['#', (_row, index) => index + 1],
-  ['Creado', (row) => row.created_at],
+  ['Creado', (row) => formatCreatedAtBolivia(row.created_at, { emptyValue: '' })],
   ['Fecha', (row) => row.fecha_activacion],
   ['Impulsador', (row) => row.impulsador],
   ['Plaza', (row) => getCiudadActivacion(row)],
@@ -361,7 +379,7 @@ async function exportarAExcelConImagenes() {
     for (const [index, row] of datos.entries()) {
       worksheet.addRow({
         numero: index + 1,
-        creado: row.created_at,
+        creado: formatCreatedAtBolivia(row.created_at, { emptyValue: '' }),
         fecha: row.fecha_activacion,
         impulsador: row.impulsador,
         plaza: getCiudadActivacion(row),
@@ -562,7 +580,7 @@ async function exportarAExcelConImagenes() {
         <tbody>
           <tr v-for="(activacion, index) in activacionesFiltradas" :key="getRowKey(activacion, index)">
             <td>{{ index + 1 }}</td>
-            <td>{{ activacion.created_at }}</td>
+            <td>{{ formatCreatedAtBolivia(activacion.created_at) }}</td>
             <td>{{ activacion.impulsador }}</td>
             <td>{{ getCiudadActivacion(activacion) }}</td>
             <td>{{ activacion.zona_activacion }}</td>
