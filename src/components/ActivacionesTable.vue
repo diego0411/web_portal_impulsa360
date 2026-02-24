@@ -34,6 +34,14 @@ const exportandoExcel = ref(false)
 const deletingActivationId = ref(null)
 const { username: apiUser, password: apiPass, hasCredentials } = useAdminApiAuth()
 
+function getCiudadActivacion(activacion) {
+  return (
+    activacion?.ciudad_activacion ??
+    activacion?.plaza ??
+    ''
+  )
+}
+
 function normalizeDateOnly(value) {
   const normalized = normalizeText(value)
   if (!normalized) {
@@ -54,7 +62,7 @@ const activacionesFiltradas = computed(() => {
   const fechaFin = fechaDesde && fechaHasta && fechaDesde > fechaHasta ? fechaDesde : fechaHasta
 
   return props.activaciones.filter((activacion) => {
-    const plaza = normalizeText(activacion.plaza)
+    const plaza = normalizeText(getCiudadActivacion(activacion))
     const distrito = normalizeText(activacion.zona_activacion)
     const impulsador = normalizeText(activacion.impulsador)
     const fecha = normalizeDateOnly(activacion.fecha_activacion)
@@ -224,7 +232,7 @@ const columnasExportacion = [
   ['Creado', (row) => row.created_at],
   ['Fecha', (row) => row.fecha_activacion],
   ['Impulsador', (row) => row.impulsador],
-  ['Plaza', (row) => row.plaza],
+  ['Plaza', (row) => getCiudadActivacion(row)],
   ['Distrito', (row) => row.zona_activacion],
   ['Nombres Cliente', (row) => row.nombres_cliente],
   ['Apellidos Cliente', (row) => row.apellidos_cliente],
@@ -356,7 +364,7 @@ async function exportarAExcelConImagenes() {
         creado: row.created_at,
         fecha: row.fecha_activacion,
         impulsador: row.impulsador,
-        plaza: row.plaza,
+        plaza: getCiudadActivacion(row),
         distrito: row.zona_activacion,
         nombres: row.nombres_cliente,
         apellidos: row.apellidos_cliente,
@@ -556,7 +564,7 @@ async function exportarAExcelConImagenes() {
             <td>{{ index + 1 }}</td>
             <td>{{ activacion.created_at }}</td>
             <td>{{ activacion.impulsador }}</td>
-            <td>{{ activacion.plaza }}</td>
+            <td>{{ getCiudadActivacion(activacion) }}</td>
             <td>{{ activacion.zona_activacion }}</td>
             <td>{{ activacion.fecha_activacion }}</td>
             <td>{{ activacion.nombres_cliente }}</td>
