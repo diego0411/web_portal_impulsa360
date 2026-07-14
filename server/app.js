@@ -3,6 +3,8 @@ import express from 'express'
 import { createClient } from '@supabase/supabase-js'
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const ALLOWED_USER_ROLES = new Set(['activador', 'lider', 'administrador'])
+const ALLOWED_USER_STATES = new Set(['activo', 'inhabilitado'])
 const REQUIRED_ENV = [
   'SUPABASE_URL',
   'SUPABASE_SERVICE_ROLE_KEY',
@@ -645,7 +647,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
     asyncRoute(async (_req, res) => {
       const { data, error } = await adminSupabase
         .from('activadores')
-        .select('usuario_id, email, nombre, plaza')
+        .select('usuario_id, email, nombre, plaza, rol, estado, lider_id, inhabilitado_at, motivo_inhabilitacion')
         .order('nombre', { ascending: true })
 
       if (error) {
@@ -664,6 +666,10 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const rawPassword = req.body?.password
       const rawNombre = req.body?.nombre
       const rawPlaza = req.body?.plaza
+      const rol = normalizeText(req.body?.rol) || 'activador'
+      const estado = normalizeText(req.body?.estado) || 'activo'
+      const liderId = rol === 'activador' ? normalizeNullableText(req.body?.lider_id) : null
+      const motivoInhabilitacion = normalizeNullableText(req.body?.motivo_inhabilitacion)
 
       const email = normalizeEmail(rawEmail)
       const password = typeof rawPassword === 'string' ? rawPassword : ''
@@ -685,6 +691,25 @@ export function createAdminApiApp({ env = process.env } = {}) {
         return
       }
 
+      if (!ALLOWED_USER_ROLES.has(rol) || !ALLOWED_USER_STATES.has(estado)) {
+        jsonError(res, 400, 'rol o estado invalido.')
+        return
+      }
+
+      if (estado === 'inhabilitado' && !motivoInhabilitacion) {
+        jsonError(res, 400, 'El motivo de inhabilitacion es obligatorio.')
+        return
+      }
+
+      if (liderId) {
+        const { data: leader, error: leaderErr } = await adminSupabase.from('activadores')
+          .select('usuario_id').eq('usuario_id', liderId).eq('rol', 'lider').eq('estado', 'activo').maybeSingle()
+        if (leaderErr || !leader) {
+          jsonError(res, 400, 'lider_id debe corresponder a un lider activo.', leaderErr?.message)
+          return
+        }
+      }
+
       const { data: created, error: createErr } = await adminSupabase.auth.admin.createUser({
         email,
         password,
@@ -702,6 +727,11 @@ export function createAdminApiApp({ env = process.env } = {}) {
         email,
         nombre,
         plaza,
+        rol,
+        estado,
+        lider_id: liderId,
+        inhabilitado_at: estado === 'inhabilitado' ? new Date().toISOString() : null,
+        motivo_inhabilitacion: estado === 'inhabilitado' ? motivoInhabilitacion : null,
       }
 
       const { error: insertErr } = await adminSupabase.from('activadores').insert(insertedUser)
@@ -731,6 +761,8 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const rawEmail = req.body?.email
       const rawEmailConfirm = req.body?.emailConfirm
       const rawPassword = req.body?.password
+      const requestedRol = normalizeText(req.body?.rol)
+      const requestedEstado = normalizeText(req.body?.estado)
 
       const nombre = normalizeText(rawNombre)
       const plaza = normalizeNullableText(rawPlaza)
@@ -759,9 +791,15 @@ export function createAdminApiApp({ env = process.env } = {}) {
         return
       }
 
+      if ((requestedRol && !ALLOWED_USER_ROLES.has(requestedRol)) ||
+        (requestedEstado && !ALLOWED_USER_STATES.has(requestedEstado))) {
+        jsonError(res, 400, 'rol o estado invalido.')
+        return
+      }
+
       const { data: previousRow, error: previousRowErr } = await adminSupabase
         .from('activadores')
-        .select('nombre, plaza, email')
+        .select('nombre, plaza, email, rol, estado, lider_id, inhabilitado_at, motivo_inhabilitacion')
         .eq('usuario_id', userId)
         .maybeSingle()
 
@@ -778,7 +816,45 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const previousEmail = normalizeEmail(previousRow.email) || null
       const emailChanged = shouldUpdateEmail && email !== previousEmail
 
-      const tableUpdatePayload = { nombre, plaza }
+      const rol = requestedRol || previousRow.rol || 'activador'
+      const estado = requestedEstado || previousRow.estado || 'activo'
+      const liderId = rol === 'activador'
+        ? (req.body?.lider_id === undefined ? previousRow.lider_id : normalizeNullableText(req.body.lider_id))
+        : null
+      const motivoInhabilitacion = req.body?.motivo_inhabilitacion === undefined
+        ? normalizeNullableText(previousRow.motivo_inhabilitacion)
+        : normalizeNullableText(req.body.motivo_inhabilitacion)
+
+      if (estado === 'inhabilitado' && !motivoInhabilitacion) {
+        jsonError(res, 400, 'El motivo de inhabilitacion es obligatorio.')
+        return
+      }
+
+      if (liderId) {
+        const { data: leader, error: leaderErr } = await adminSupabase
+          .from('activadores')
+          .select('usuario_id')
+          .eq('usuario_id', liderId)
+          .eq('rol', 'lider')
+          .eq('estado', 'activo')
+          .maybeSingle()
+        if (leaderErr || !leader) {
+          jsonError(res, 400, 'lider_id debe corresponder a un lider activo.', leaderErr?.message)
+          return
+        }
+      }
+
+      const tableUpdatePayload = {
+        nombre,
+        plaza,
+        rol,
+        estado,
+        lider_id: liderId,
+        inhabilitado_at: estado === 'inhabilitado'
+          ? previousRow.inhabilitado_at || new Date().toISOString()
+          : null,
+        motivo_inhabilitacion: estado === 'inhabilitado' ? motivoInhabilitacion : null,
+      }
       if (shouldUpdateEmail) {
         tableUpdatePayload.email = email
       }
@@ -824,6 +900,11 @@ export function createAdminApiApp({ env = process.env } = {}) {
             nombre: previousRow.nombre,
             plaza: previousRow.plaza,
             email: previousRow.email ?? null,
+            rol: previousRow.rol,
+            estado: previousRow.estado,
+            lider_id: previousRow.lider_id,
+            inhabilitado_at: previousRow.inhabilitado_at,
+            motivo_inhabilitacion: previousRow.motivo_inhabilitacion,
           })
           .eq('usuario_id', userId)
 
@@ -841,6 +922,45 @@ export function createAdminApiApp({ env = process.env } = {}) {
         emailUpdated: emailChanged,
         passwordUpdated: Boolean(password),
       })
+    })
+  )
+
+  app.patch(
+    '/admin/users/:userId/status',
+    asyncRoute(async (req, res) => {
+      const { userId } = req.params
+      const estado = normalizeText(req.body?.estado)
+      const motivo = normalizeNullableText(req.body?.motivo_inhabilitacion)
+
+      if (!ALLOWED_USER_STATES.has(estado)) {
+        jsonError(res, 400, 'estado invalido.')
+        return
+      }
+      if (estado === 'inhabilitado' && !motivo) {
+        jsonError(res, 400, 'El motivo de inhabilitacion es obligatorio.')
+        return
+      }
+
+      const payload = {
+        estado,
+        inhabilitado_at: estado === 'inhabilitado' ? new Date().toISOString() : null,
+        motivo_inhabilitacion: estado === 'inhabilitado' ? motivo : null,
+      }
+      const { data, error } = await adminSupabase
+        .from('activadores')
+        .update(payload)
+        .eq('usuario_id', userId)
+        .select('usuario_id')
+
+      if (error) {
+        jsonError(res, 500, 'No se pudo cambiar el estado del usuario.', error.message)
+        return
+      }
+      if (!data?.length) {
+        jsonError(res, 404, 'No se encontro el usuario en activadores.')
+        return
+      }
+      res.json({ ok: true, ...payload })
     })
   )
 

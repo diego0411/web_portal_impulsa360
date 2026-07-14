@@ -300,6 +300,10 @@ textarea {
   grid-template-columns: repeat(3, minmax(170px, 1fr));
 }
 
+.filtros-usuarios {
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+}
+
 .filtros label {
   display: flex;
   flex-direction: column;
@@ -427,6 +431,24 @@ button {
 .boton-cancelar {
   background: #ebf1f7;
   color: #4d6680;
+}
+
+.estado-etiqueta {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 0.25rem 0.58rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.estado-activo {
+  background: #e6f7ef;
+  color: #0f6a44;
+}
+
+.estado-inhabilitado {
+  background: #fde8ea;
+  color: #8b232d;
 }
 
 .panel-empty {
