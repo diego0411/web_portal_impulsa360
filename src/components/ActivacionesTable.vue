@@ -9,7 +9,7 @@ import {
   notifyWarning,
   requestConfirmation,
 } from '../lib/feedback'
-import { normalizeText } from '../lib/textUtils'
+import { isValidEmail, normalizeEmail, normalizeText } from '../lib/textUtils'
 
 const props = defineProps({
   activaciones: {
@@ -17,7 +17,7 @@ const props = defineProps({
     default: () => [],
   },
 })
-const emit = defineEmits(['activacion-eliminada'])
+const emit = defineEmits(['activacion-eliminada', 'activacion-actualizada'])
 
 const storageBaseUrl = String(import.meta.env.VITE_SUPABASE_URL ?? '').replace(/\/$/, '')
 const storageBucket =
@@ -38,6 +38,10 @@ const filtroFechaHasta = ref('')
 const exportandoExcel = ref(false)
 const deletingActivationId = ref(null)
 const activacionSeleccionada = ref(null)
+const editandoActivacion = ref(false)
+const guardandoEdicion = ref(false)
+const formularioEdicion = ref({})
+const motivoEdicion = ref('')
 const { username: apiUser, password: apiPass, hasCredentials } = useAdminApiAuth()
 
 function getCiudadActivacion(activacion) {
@@ -197,7 +201,7 @@ const seccionesDetalleConfig = [
   { title: 'Datos generales', keys: ['fecha_activacion', 'impulsador', 'ciudad_activacion', 'plaza', 'zona_activacion'] },
   { title: 'Datos del cliente', keys: ['nombres_cliente', 'apellidos_cliente', 'ci_cliente', 'telefono_cliente', 'email_cliente'] },
   { title: 'Informacion de la activacion', keys: ['tipo_activacion', 'descargo_app', 'registro', 'cash_in', 'cash_out', 'p2p', 'qr_fisico', 'respaldo'] },
-  { title: 'Informacion del comercio o tienda', keys: ['nombre_comercio', 'comercio', 'cliente', 'tipo_comercio', 'tamano_tienda', 'rubro', 'comercio_fuera_mercado', 'plaza_temporal'] },
+  { title: 'Informacion del comercio o tienda', keys: ['nombre_comercio', 'comercio', 'cliente', 'tipo_comercio', 'tamano_tienda', 'tipo_tienda', 'rubro_comercio', 'rubro_comercio_otro', 'comercio_fuera_mercado', 'es_plaza_temporal', 'plaza_temporal'] },
   { title: 'Evidencias y fotografias', keys: ['foto_url', 'foto_cash_in', 'foto_cashin'] },
   { title: 'Ubicacion', keys: ['latitud', 'longitud', 'direccion', 'ubicacion'] },
   { title: 'Errores u observaciones', keys: ['hubo_error', 'tipo_error', 'descripcion_error', 'observaciones'] },
@@ -232,7 +236,117 @@ function getResultado(activacion) {
 }
 
 function abrirDetalle(activacion) { activacionSeleccionada.value = activacion }
-function cerrarDetalle() { activacionSeleccionada.value = null }
+function cerrarDetalle() {
+  if (guardandoEdicion.value) return
+  activacionSeleccionada.value = null
+  editandoActivacion.value = false
+}
+
+function tieneCampo(row, key) {
+  return Object.prototype.hasOwnProperty.call(row ?? {}, key)
+}
+
+const nombreEditableKey = computed(() => {
+  const row = activacionSeleccionada.value
+  return ['nombre_comercio', 'comercio', 'cliente', 'nombres_cliente'].find((key) => tieneCampo(row, key)) ?? 'nombres_cliente'
+})
+const plazaEditableKey = computed(() => tieneCampo(activacionSeleccionada.value, 'ciudad_activacion') ? 'ciudad_activacion' : 'plaza')
+const resultadoEditableKey = computed(() => ['resultado', 'estado'].find((key) => tieneCampo(activacionSeleccionada.value, key)) ?? null)
+const esActivacionComercio = computed(() => normalizeText(formularioEdicion.value.tipo_activacion).includes('comercio'))
+const esTiendaBarrio = computed(() => {
+  const tipo = `${normalizeText(formularioEdicion.value.tipo_activacion)} ${normalizeText(activacionSeleccionada.value?.tipo_comercio)}`
+  return tipo.includes('tienda') && tipo.includes('barrio')
+})
+
+function iniciarEdicion() {
+  const row = activacionSeleccionada.value
+  if (!row) return
+  formularioEdicion.value = {
+    nombre: row[nombreEditableKey.value] ?? '',
+    telefono_cliente: row.telefono_cliente ?? '',
+    email_cliente: row.email_cliente ?? '',
+    plaza: row[plazaEditableKey.value] ?? '',
+    tipo_activacion: row.tipo_activacion ?? '',
+    resultado: resultadoEditableKey.value ? row[resultadoEditableKey.value] ?? '' : '',
+    observaciones: row.observaciones ?? '',
+    tipo_tienda: row.tipo_tienda ?? '',
+    rubro_comercio: row.rubro_comercio ?? '',
+    rubro_comercio_otro: row.rubro_comercio_otro ?? '',
+    comercio_fuera_mercado: row.comercio_fuera_mercado === true,
+    tipo_error: row.tipo_error ?? '',
+    descripcion_error: row.descripcion_error ?? '',
+    es_plaza_temporal: row.es_plaza_temporal === true,
+    plaza_temporal: row.plaza_temporal ?? '',
+  }
+  motivoEdicion.value = ''
+  editandoActivacion.value = true
+}
+
+function cancelarEdicion() {
+  if (guardandoEdicion.value) return
+  editandoActivacion.value = false
+  formularioEdicion.value = {}
+  motivoEdicion.value = ''
+}
+
+function validarEdicion() {
+  const form = formularioEdicion.value
+  if (!motivoEdicion.value.trim()) return 'El motivo de edicion es obligatorio.'
+  if (form.email_cliente && !isValidEmail(normalizeEmail(form.email_cliente))) return 'Ingresa un correo valido.'
+  if (form.telefono_cliente && !/^\+?[0-9\s()\-]{6,20}$/.test(form.telefono_cliente.trim())) return 'Ingresa un telefono valido.'
+  if (form.es_plaza_temporal && !form.plaza_temporal.trim()) return 'La plaza temporal es obligatoria.'
+  if (normalizeText(form.rubro_comercio) === 'otro' && !form.rubro_comercio_otro.trim()) return 'Especifica el otro rubro comercial.'
+  if (form.tipo_tienda && !['Pequeña', 'Mediana', 'Grande'].includes(form.tipo_tienda)) return 'Selecciona un tamaño de tienda valido.'
+  return null
+}
+
+function construirCambiosEdicion() {
+  const form = formularioEdicion.value
+  const changes = {
+    [nombreEditableKey.value]: form.nombre,
+    telefono_cliente: form.telefono_cliente,
+    email_cliente: form.email_cliente,
+    [plazaEditableKey.value]: form.plaza,
+    tipo_activacion: form.tipo_activacion,
+    observaciones: form.observaciones,
+    tipo_error: form.tipo_error,
+    descripcion_error: form.descripcion_error,
+    es_plaza_temporal: form.es_plaza_temporal,
+    plaza_temporal: form.es_plaza_temporal ? form.plaza_temporal : null,
+  }
+  if (resultadoEditableKey.value) changes[resultadoEditableKey.value] = form.resultado
+  if (esActivacionComercio.value) {
+    changes.rubro_comercio = form.rubro_comercio
+    changes.rubro_comercio_otro = normalizeText(form.rubro_comercio) === 'otro' ? form.rubro_comercio_otro : null
+    changes.comercio_fuera_mercado = form.comercio_fuera_mercado
+    changes.tipo_tienda = esTiendaBarrio.value ? form.tipo_tienda : null
+  }
+  return changes
+}
+
+async function guardarEdicion() {
+  const validationError = validarEdicion()
+  if (validationError) { notifyWarning(validationError); return }
+  const activationId = normalizeText(activacionSeleccionada.value?.id)
+  if (!activationId || !hasCredentials.value) {
+    notifyWarning(!activationId ? 'La activacion no tiene ID.' : 'Conecta la API admin para editar activaciones.')
+    return
+  }
+  guardandoEdicion.value = true
+  try {
+    const result = await requestAdmin(`/admin/activaciones/${encodeURIComponent(activationId)}`, {
+      method: 'PATCH',
+      body: { changes: construirCambiosEdicion(), motivoEdicion: motivoEdicion.value.trim() },
+    })
+    activacionSeleccionada.value = result.activation
+    emit('activacion-actualizada', { activation: result.activation })
+    editandoActivacion.value = false
+    formularioEdicion.value = {}
+    motivoEdicion.value = ''
+    notifySuccess('Activacion actualizada correctamente.')
+  } catch (error) { notifyError(getErrorMessage(error)) }
+  finally { guardandoEdicion.value = false }
+}
 
 async function requestAdmin(path, options = {}) {
   return adminApiRequest({
@@ -351,7 +465,16 @@ const columnasExportacion = [
   ['Tipo Activacion', (row) => row.tipo_activacion],
   ['Tipo Comercio', (row) => row.tipo_comercio],
   ['Tamano Tienda', (row) => row.tamano_tienda],
+  ['Tipo Tienda', (row) => row.tipo_tienda],
+  ['Rubro Comercio', (row) => row.rubro_comercio],
+  ['Otro Rubro', (row) => row.rubro_comercio_otro],
+  ['Comercio Fuera de Mercado', (row) => row.comercio_fuera_mercado == null ? '' : row.comercio_fuera_mercado ? 'Si' : 'No'],
+  ['Tipo Error', (row) => row.tipo_error],
+  ['Observaciones', (row) => row.observaciones],
+  ['Es Plaza Temporal', (row) => row.es_plaza_temporal == null ? '' : row.es_plaza_temporal ? 'Si' : 'No'],
+  ['Plaza Temporal', (row) => row.plaza_temporal],
   ['Foto URL', (row) => getFotoPublicUrl(row.foto_url)],
+  ['Foto Cash-In', (row) => getFotoPublicUrl(row.foto_cash_in)],
   ['Latitud', (row) => row.latitud],
   ['Longitud', (row) => row.longitud],
   ['Usuario ID', (row) => row.usuario_id],
@@ -435,7 +558,16 @@ async function exportarAExcelConImagenes() {
       { header: 'Tipo Activacion', key: 'tipoActivacion', width: 20 },
       { header: 'Tipo Comercio', key: 'tipoComercio', width: 20 },
       { header: 'Tamano Tienda', key: 'tamanoTienda', width: 18 },
+      { header: 'Tipo Tienda', key: 'tipoTienda', width: 18 },
+      { header: 'Rubro Comercio', key: 'rubroComercio', width: 20 },
+      { header: 'Otro Rubro', key: 'rubroComercioOtro', width: 20 },
+      { header: 'Fuera de Mercado', key: 'fueraMercado', width: 18 },
+      { header: 'Tipo Error', key: 'tipoError', width: 20 },
+      { header: 'Observaciones', key: 'observaciones', width: 30 },
+      { header: 'Es Plaza Temporal', key: 'esPlazaTemporal', width: 18 },
+      { header: 'Plaza Temporal', key: 'plazaTemporal', width: 20 },
       { header: 'Foto', key: 'foto', width: 16 },
+      { header: 'Foto Cash-In', key: 'fotoCashIn', width: 16 },
       { header: 'Latitud', key: 'latitud', width: 14 },
       { header: 'Longitud', key: 'longitud', width: 14 },
       { header: 'Usuario ID', key: 'usuarioId', width: 38 },
@@ -483,24 +615,33 @@ async function exportarAExcelConImagenes() {
         tipoActivacion: row.tipo_activacion,
         tipoComercio: row.tipo_comercio,
         tamanoTienda: row.tamano_tienda,
+        tipoTienda: row.tipo_tienda,
+        rubroComercio: row.rubro_comercio,
+        rubroComercioOtro: row.rubro_comercio_otro,
+        fueraMercado: row.comercio_fuera_mercado == null ? '' : row.comercio_fuera_mercado ? 'Si' : 'No',
+        tipoError: row.tipo_error,
+        observaciones: row.observaciones,
+        esPlazaTemporal: row.es_plaza_temporal == null ? '' : row.es_plaza_temporal ? 'Si' : 'No',
+        plazaTemporal: row.plaza_temporal,
         foto: row.foto_url ? 'Imagen adjunta' : '',
+        fotoCashIn: row.foto_cash_in ? 'Imagen adjunta' : '',
         latitud: row.latitud,
         longitud: row.longitud,
         usuarioId: row.usuario_id,
       })
     }
 
-    const fotoColumnIndex = worksheet.getColumn('foto').number
-
+    const imageColumns = [
+      { key: 'foto', field: 'foto_url' },
+      { key: 'fotoCashIn', field: 'foto_cash_in' },
+    ]
     for (const [index, row] of datos.entries()) {
-      if (!row.foto_url) {
-        continue
-      }
-
-      const fotoUrl = getFotoPublicUrl(row.foto_url)
       const rowNumber = index + 2
-
-      try {
+      for (const imageColumn of imageColumns) {
+        if (!row[imageColumn.field]) continue
+        const fotoColumnIndex = worksheet.getColumn(imageColumn.key).number
+        const fotoUrl = getFotoPublicUrl(row[imageColumn.field])
+        try {
         const response = await fetch(fotoUrl)
         if (!response.ok) {
           worksheet.getCell(rowNumber, fotoColumnIndex).value = fotoUrl
@@ -531,8 +672,9 @@ async function exportarAExcelConImagenes() {
         })
 
         worksheet.getCell(rowNumber, fotoColumnIndex).value = ''
-      } catch {
-        worksheet.getCell(rowNumber, fotoColumnIndex).value = fotoUrl
+        } catch {
+          worksheet.getCell(rowNumber, fotoColumnIndex).value = fotoUrl
+        }
       }
     }
 
@@ -662,9 +804,33 @@ async function exportarAExcelConImagenes() {
         <aside class="detalle-activacion" role="dialog" aria-modal="true" aria-label="Detalle de activacion">
           <header class="detalle-header">
             <div><p class="view-kicker">Registro de activacion</p><h3 class="detalle-title">{{ getClienteComercio(activacionSeleccionada) }}</h3></div>
+            <button v-if="!editandoActivacion" type="button" class="boton boton-editar" :disabled="!hasCredentials || !activacionSeleccionada.id" @click="iniciarEdicion">Editar</button>
             <button type="button" class="detalle-close" aria-label="Cerrar detalle" @click="cerrarDetalle">×</button>
           </header>
-          <div class="detalle-body">
+          <form v-if="editandoActivacion" class="detalle-body" @submit.prevent="guardarEdicion">
+            <fieldset class="edicion-activacion" :disabled="guardandoEdicion">
+              <label><span class="field-label">Nombre del cliente o comercio</span><input v-model="formularioEdicion.nombre" class="input-texto"></label>
+              <label><span class="field-label">Telefono</span><input v-model="formularioEdicion.telefono_cliente" class="input-texto" inputmode="tel"></label>
+              <label><span class="field-label">Correo</span><input v-model="formularioEdicion.email_cliente" type="email" class="input-texto"></label>
+              <label><span class="field-label">Plaza</span><input v-model="formularioEdicion.plaza" class="input-texto"></label>
+              <label><span class="field-label">Tipo de activacion</span><input v-model="formularioEdicion.tipo_activacion" class="input-texto"></label>
+              <label v-if="resultadoEditableKey"><span class="field-label">Resultado o estado</span><input v-model="formularioEdicion.resultado" class="input-texto"></label>
+              <label class="edicion-field-wide"><span class="field-label">Observaciones</span><textarea v-model="formularioEdicion.observaciones" class="input-texto" rows="3"></textarea></label>
+              <template v-if="esActivacionComercio">
+                <label><span class="field-label">Rubro del comercio</span><input v-model="formularioEdicion.rubro_comercio" class="input-texto"></label>
+                <label v-if="normalizeText(formularioEdicion.rubro_comercio) === 'otro'"><span class="field-label">Otro rubro</span><input v-model="formularioEdicion.rubro_comercio_otro" class="input-texto"></label>
+                <label><span class="field-label">Comercio fuera de mercado</span><select v-model="formularioEdicion.comercio_fuera_mercado" class="input-texto"><option :value="false">No</option><option :value="true">Si</option></select></label>
+                <label v-if="esTiendaBarrio"><span class="field-label">Tipo de tienda</span><select v-model="formularioEdicion.tipo_tienda" class="input-texto"><option value="">Sin especificar</option><option>Pequeña</option><option>Mediana</option><option>Grande</option></select></label>
+              </template>
+              <label><span class="field-label">Tipo de error</span><input v-model="formularioEdicion.tipo_error" class="input-texto"></label>
+              <label class="edicion-field-wide"><span class="field-label">Descripcion del error</span><textarea v-model="formularioEdicion.descripcion_error" class="input-texto" rows="3"></textarea></label>
+              <label><span class="field-label">Es plaza temporal</span><select v-model="formularioEdicion.es_plaza_temporal" class="input-texto"><option :value="false">No</option><option :value="true">Si</option></select></label>
+              <label v-if="formularioEdicion.es_plaza_temporal"><span class="field-label">Plaza temporal</span><input v-model="formularioEdicion.plaza_temporal" class="input-texto"></label>
+              <label class="edicion-field-wide"><span class="field-label">Motivo de edicion</span><textarea v-model="motivoEdicion" class="input-texto" rows="3" placeholder="Obligatorio"></textarea></label>
+            </fieldset>
+            <div class="confirm-actions"><button type="button" class="boton boton-cancelar" :disabled="guardandoEdicion" @click="cancelarEdicion">Cancelar</button><button type="submit" class="boton boton-guardar" :disabled="guardandoEdicion || !motivoEdicion.trim()">{{ guardandoEdicion ? 'Guardando...' : 'Guardar cambios' }}</button></div>
+          </form>
+          <div v-else class="detalle-body">
             <section v-for="section in seccionesDetalle" :key="section.title" class="detalle-section">
               <h4>{{ section.title }}</h4>
               <dl class="detalle-grid">

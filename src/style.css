@@ -1263,6 +1263,30 @@ button {
   border: 1px solid var(--ru-border);
 }
 
+.edicion-activacion {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.edicion-activacion label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.edicion-activacion textarea {
+  resize: vertical;
+}
+
+.edicion-field-wide {
+  grid-column: 1 / -1;
+}
+
 .confirm-modal {
   width: min(460px, 100%);
   border-radius: 18px;
@@ -1430,6 +1454,14 @@ button {
   }
 
   .detalle-field-wide {
+    grid-column: auto;
+  }
+
+  .edicion-activacion {
+    grid-template-columns: 1fr;
+  }
+
+  .edicion-field-wide {
     grid-column: auto;
   }
   .app-shell {
