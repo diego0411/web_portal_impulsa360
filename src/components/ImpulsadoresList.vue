@@ -12,6 +12,11 @@ const filtroNombre = ref('')
 const filtroEmail = ref('')
 const filtroPlaza = ref('')
 
+function nombreLider(impulsador) {
+  if (!impulsador.lider_id) return '-'
+  return impulsador.lider_nombre || impulsadores.value.find((item) => item.usuario_id === impulsador.lider_id)?.nombre || 'No disponible'
+}
+
 const impulsadoresFiltrados = computed(() => {
   return impulsadores.value.filter((impulsador) => {
     const coincideNombre = containsNormalized(impulsador.nombre, filtroNombre.value)
@@ -31,7 +36,7 @@ onMounted(async () => {
       const data = await portalRequest('/portal/users')
       impulsadores.value = data.users ?? []
     } else {
-      const { data, error } = await supabase.from('activadores').select('usuario_id,nombre,email,plaza').order('nombre')
+      const { data, error } = await supabase.from('activadores').select('usuario_id,nombre,email,plaza,rol,estado,lider_id').order('nombre')
       if (error) throw error
       impulsadores.value = data ?? []
     }
@@ -96,10 +101,12 @@ onMounted(async () => {
         <thead>
           <tr>
             <th>#</th>
-            <th>Usuario ID</th>
             <th>Nombre</th>
             <th>Email</th>
             <th>Plaza</th>
+            <th>Rol</th>
+            <th>Estado</th>
+            <th>Lider</th>
           </tr>
         </thead>
         <tbody>
@@ -108,10 +115,12 @@ onMounted(async () => {
             :key="impulsador.usuario_id"
           >
             <td>{{ index + 1 }}</td>
-            <td>{{ impulsador.usuario_id }}</td>
             <td>{{ impulsador.nombre }}</td>
             <td>{{ impulsador.email }}</td>
             <td>{{ impulsador.plaza }}</td>
+            <td>{{ impulsador.rol || '-' }}</td>
+            <td><span class="scope-pill" :class="impulsador.estado === 'inhabilitado' ? 'scope-pill-user' : 'scope-pill-all'">{{ impulsador.estado || 'Sin estado' }}</span></td>
+            <td>{{ nombreLider(impulsador) }}</td>
           </tr>
         </tbody>
       </table>

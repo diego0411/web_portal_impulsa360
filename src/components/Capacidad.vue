@@ -1,22 +1,16 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { adminApiRequest } from '../lib/adminApiClient'
-import { useAdminApiAuth } from '../lib/adminAuthStore'
-import { notifyError, notifySuccess, notifyWarning } from '../lib/feedback'
+import { useAuth } from '../lib/authStore'
+import { notifyError } from '../lib/feedback'
 
 const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(/\/$/, '')
 
-const {
-  username: apiUser,
-  password: apiPass,
-  hasCredentials: puedeConectar,
-  setCredentials,
-} = useAdminApiAuth()
-const conectado = ref(false)
-const conectando = ref(false)
-const authErrorMsg = ref(null)
+const { session, isAdmin } = useAuth()
+const accessError = ref(null)
 const loadingSummary = ref(false)
 const summary = ref(null)
+const lastUpdated = ref(null)
 
 const hasSummary = computed(() => Boolean(summary.value))
 const hasDatabaseExact = computed(() => {
@@ -129,7 +123,7 @@ const combinedEstimateHint = computed(() => {
     return reason
   }
 
-  return `Supuesto aplicado: 1 activacion = 1 foto. Foto promedio: ${averagePhotoBytesLabel.value}.`
+  return `Estimacion combinada basada en un promedio de 1 foto por activacion y ${averagePhotoBytesLabel.value} por foto.`
 })
 
 const estimateHint = computed(() => {
@@ -196,53 +190,54 @@ async function requestAdmin(path, options = {}) {
   return adminApiRequest({
     baseUrl: apiBaseUrl,
     path,
-    username: apiUser.value,
-    password: apiPass.value,
+    token: session.value?.access_token,
     ...options,
   })
 }
 
 async function cargarResumen() {
-  if (!conectado.value) {
+  if (!isAdmin.value || loadingSummary.value) {
     return
   }
 
   loadingSummary.value = true
+  accessError.value = null
 
   try {
     const result = await requestAdmin('/admin/storage/summary')
     summary.value = result.summary ?? null
+    lastUpdated.value = new Date()
   } catch (error) {
-    notifyError(getErrorMessage(error))
+    accessError.value = getErrorMessage(error)
+    notifyError(accessError.value)
   } finally {
     loadingSummary.value = false
   }
 }
 
-async function conectarApi() {
-  if (!puedeConectar.value) {
-    authErrorMsg.value = 'Ingresa usuario y password de API.'
-    notifyWarning(authErrorMsg.value)
+function usageStatus(value) {
+  const percent = Number(value)
+  if (!Number.isFinite(percent) || percent < 70) return 'normal'
+  if (percent <= 85) return 'warning'
+  return 'critical'
+}
+
+function usageWidth(value) {
+  const percent = Number(value)
+  return `${Math.min(100, Math.max(0, Number.isFinite(percent) ? percent : 0))}%`
+}
+
+function formatUpdatedAt(value) {
+  return value ? new Intl.DateTimeFormat('es-BO', { dateStyle: 'short', timeStyle: 'medium' }).format(value) : 'Sin actualizar'
+}
+
+onMounted(() => {
+  if (!isAdmin.value) {
+    accessError.value = 'Este modulo esta disponible solo para administradores activos.'
     return
   }
-
-  authErrorMsg.value = null
-  conectando.value = true
-
-  try {
-    await requestAdmin('/admin/healthz')
-    setCredentials(apiUser.value, apiPass.value)
-    conectado.value = true
-    await cargarResumen()
-    notifySuccess('Modulo de capacidad conectado a la API admin.')
-  } catch (error) {
-    conectado.value = false
-    authErrorMsg.value = getErrorMessage(error)
-    notifyError(authErrorMsg.value)
-  } finally {
-    conectando.value = false
-  }
-}
+  cargarResumen()
+})
 </script>
 
 <template>
@@ -254,46 +249,22 @@ async function conectarApi() {
         Controla de forma clara el uso de Storage y base de datos, con medicion real o estimada.
       </p>
       <div class="meta-row">
-        <span class="meta-pill" :class="{ 'meta-pill-ok': conectado }">
-          {{ conectado ? 'API conectada' : 'API desconectada' }}
-        </span>
+        <span class="meta-pill" :class="{ 'meta-pill-ok': isAdmin }">Sesion administrativa</span>
+        <span class="meta-pill">Ultima actualizacion: {{ formatUpdatedAt(lastUpdated) }}</span>
       </div>
     </header>
 
     <div class="forms-grid">
       <div class="formulario-registro">
-        <h2 class="subtitulo">Conexion API Admin</h2>
-        <form class="formulario-campos" @submit.prevent="conectarApi">
-          <input
-            v-model="apiUser"
-            placeholder="Usuario API"
-            class="input-texto"
-            @keydown.enter.prevent="conectarApi"
-          />
-          <input
-            v-model="apiPass"
-            type="password"
-            placeholder="Password API"
-            class="input-texto"
-            @keydown.enter.prevent="conectarApi"
-          />
-          <button type="submit" class="boton boton-primario" :disabled="conectando || !puedeConectar">
-            {{ conectando ? 'Conectando...' : 'Conectar y actualizar' }}
-          </button>
-          <p v-if="authErrorMsg" class="mensaje-error">{{ authErrorMsg }}</p>
-          <p v-else-if="conectado">Conectado a {{ apiBaseUrl }}</p>
-        </form>
-      </div>
-
-      <div class="formulario-registro">
         <div class="toolbar-line">
           <h2 class="subtitulo subtitulo-inline">Resumen</h2>
-          <button class="boton" :disabled="!conectado || loadingSummary" @click="cargarResumen">
+          <button class="boton" :disabled="!isAdmin || loadingSummary" @click="cargarResumen">
             {{ loadingSummary ? 'Actualizando...' : 'Actualizar' }}
           </button>
         </div>
-        <p v-if="hasSummary" class="capacity-detail">{{ estimateHint }}</p>
-        <p v-else class="panel-empty">Conecta la API admin para ver capacidad y estimaciones.</p>
+        <p v-if="accessError" class="mensaje-error">{{ accessError }}</p>
+        <p v-else-if="hasSummary" class="capacity-detail">{{ estimateHint }}</p>
+        <p v-else class="panel-empty">{{ loadingSummary ? 'Cargando resumen...' : 'No hay datos de capacidad disponibles.' }}</p>
       </div>
     </div>
 
@@ -302,6 +273,10 @@ async function conectarApi() {
         <div class="capacity-card">
           <p class="capacity-label">Storage usado</p>
           <p class="capacity-value">{{ formatBytes(summary.storage_used_bytes) }}</p>
+          <span class="capacity-source-badge">Medido</span>
+          <div class="capacity-progress" :class="`capacity-progress-${usageStatus(summary.storage_usage_percent)}`">
+            <span :style="{ width: usageWidth(summary.storage_usage_percent) }"></span>
+          </div>
           <p class="capacity-detail">{{ storageUsageLabel }} · {{ summary.storage_objects_count }} archivos</p>
         </div>
 
@@ -321,6 +296,10 @@ async function conectarApi() {
         <div class="capacity-card">
           <p class="capacity-label">Base de datos usada</p>
           <p class="capacity-value">{{ databaseUsedLabel }}</p>
+          <span class="capacity-source-badge" :class="{ 'capacity-source-estimated': !hasDatabaseExact }">{{ hasDatabaseExact ? 'Medido' : 'Estimado' }}</span>
+          <div class="capacity-progress" :class="`capacity-progress-${usageStatus(summary.database_usage_percent)}`">
+            <span :style="{ width: usageWidth(summary.database_usage_percent) }"></span>
+          </div>
           <p class="capacity-detail">{{ databaseUsageLabel }} del limite</p>
         </div>
 

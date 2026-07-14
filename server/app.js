@@ -692,7 +692,18 @@ export function createAdminApiApp({ env = process.env } = {}) {
     if (req.portalUser.rol === 'lider') query = query.eq('lider_id', req.portalUser.usuario_id)
     const { data, error } = await query
     if (error) { jsonError(res, 500, 'No se pudo obtener usuarios.', error.message); return }
-    res.json({ users: data ?? [] })
+    const users = data ?? []
+    const leaderIds = [...new Set(users.map((item) => item.lider_id).filter(Boolean))]
+    let leaderNames = new Map()
+    if (leaderIds.length) {
+      const { data: leaders, error: leadersError } = await adminSupabase
+        .from('activadores')
+        .select('usuario_id,nombre')
+        .in('usuario_id', leaderIds)
+      if (leadersError) { jsonError(res, 500, 'No se pudo resolver los lideres.', leadersError.message); return }
+      leaderNames = new Map((leaders ?? []).map((leader) => [leader.usuario_id, leader.nombre]))
+    }
+    res.json({ users: users.map((item) => ({ ...item, lider_nombre: leaderNames.get(item.lider_id) ?? null })) })
   }))
   app.get('/portal/activations', asyncRoute(async (req, res) => {
     const from = Math.max(0, Number.parseInt(String(req.query.from ?? '0'), 10) || 0)
@@ -1606,7 +1617,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const message = normalizeText(rawMessage)
       const scope = rawScope === 'user' ? 'user' : rawScope === 'all' ? 'all' : ''
       const targetUserId = normalizeText(rawTargetUserId)
-      const createdBy = normalizeText(req.adminUser) || 'admin'
+      const createdBy = normalizeText(req.portalUser?.email) || normalizeText(req.adminUser) || 'admin'
 
       if (title.length < 3 || title.length > 120) {
         jsonError(res, 400, 'El titulo debe tener entre 3 y 120 caracteres.')
@@ -1629,6 +1640,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
         const { data, error } = await adminSupabase
           .from('activadores')
           .select('usuario_id, nombre, email')
+          .eq('estado', 'activo')
           .not('usuario_id', 'is', null)
 
         if (error) {
@@ -1654,6 +1666,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
           .from('activadores')
           .select('usuario_id, nombre, email')
           .eq('usuario_id', targetUserId)
+          .eq('estado', 'activo')
           .maybeSingle()
 
         if (error) {
@@ -1662,7 +1675,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
         }
 
         if (!data?.usuario_id) {
-          jsonError(res, 404, 'No se encontro el usuario objetivo.')
+          jsonError(res, 404, 'No se encontro un usuario objetivo activo.')
           return
         }
 

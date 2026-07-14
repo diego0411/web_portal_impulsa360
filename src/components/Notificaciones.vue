@@ -1,21 +1,15 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { adminApiRequest } from '../lib/adminApiClient'
-import { useAdminApiAuth } from '../lib/adminAuthStore'
+import { useAuth } from '../lib/authStore'
 import { notifyError, notifySuccess, notifyWarning } from '../lib/feedback'
 import { containsNormalized } from '../lib/textUtils'
 
 const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(/\/$/, '')
 
-const {
-  username: apiUser,
-  password: apiPass,
-  hasCredentials: puedeConectar,
-  setCredentials,
-} = useAdminApiAuth()
-const conectado = ref(false)
-const conectando = ref(false)
-const authErrorMsg = ref(null)
+const { session, isAdmin } = useAuth()
+const initializing = ref(true)
+const accessError = ref(null)
 
 const usuarios = ref([])
 const notificaciones = ref([])
@@ -112,22 +106,17 @@ async function requestAdmin(path, options = {}) {
   return adminApiRequest({
     baseUrl: apiBaseUrl,
     path,
-    username: apiUser.value,
-    password: apiPass.value,
+    token: session.value?.access_token,
     ...options,
   })
 }
 
 async function cargarUsuarios() {
   const result = await requestAdmin('/admin/users')
-  usuarios.value = result.users ?? []
+  usuarios.value = (result.users ?? []).filter((usuario) => (usuario.estado ?? 'activo') === 'activo')
 }
 
 async function cargarNotificaciones() {
-  if (!conectado.value) {
-    return
-  }
-
   cargandoNotificaciones.value = true
   errorNotificaciones.value = null
 
@@ -142,33 +131,8 @@ async function cargarNotificaciones() {
   }
 }
 
-async function conectarApi() {
-  if (!puedeConectar.value) {
-    authErrorMsg.value = 'Ingresa usuario y password de API.'
-    notifyWarning(authErrorMsg.value)
-    return
-  }
-
-  authErrorMsg.value = null
-  conectando.value = true
-
-  try {
-    await requestAdmin('/admin/healthz')
-    setCredentials(apiUser.value, apiPass.value)
-    conectado.value = true
-    await Promise.all([cargarUsuarios(), cargarNotificaciones()])
-    notifySuccess('Modulo de notificaciones conectado a la API.')
-  } catch (error) {
-    conectado.value = false
-    authErrorMsg.value = getErrorMessage(error)
-    notifyError(authErrorMsg.value)
-  } finally {
-    conectando.value = false
-  }
-}
-
 async function enviarNotificacion() {
-  if (!conectado.value || enviando.value) {
+  if (!isAdmin.value || enviando.value) {
     return
   }
 
@@ -215,6 +179,23 @@ async function enviarNotificacion() {
     enviando.value = false
   }
 }
+
+onMounted(async () => {
+  if (!isAdmin.value) {
+    accessError.value = 'Este modulo esta disponible solo para administradores activos.'
+    initializing.value = false
+    return
+  }
+
+  try {
+    await Promise.all([cargarUsuarios(), cargarNotificaciones()])
+  } catch (error) {
+    accessError.value = getErrorMessage(error)
+    notifyError(accessError.value)
+  } finally {
+    initializing.value = false
+  }
+})
 </script>
 
 <template>
@@ -227,42 +208,14 @@ async function enviarNotificacion() {
         estado de lectura.
       </p>
       <div class="meta-row">
-        <span class="meta-pill" :class="{ 'meta-pill-ok': conectado }">
-          {{ conectado ? 'API conectada' : 'API desconectada' }}
-        </span>
+        <span class="meta-pill" :class="{ 'meta-pill-ok': isAdmin }">Sesion administrativa</span>
       </div>
     </header>
 
-    <div class="forms-grid">
+    <p v-if="initializing">Cargando modulo...</p>
+    <p v-else-if="accessError" class="mensaje-error">{{ accessError }}</p>
+    <div v-else class="forms-grid">
       <div class="formulario-registro">
-        <h2 class="subtitulo">Conexion API Admin</h2>
-        <form class="formulario-campos" @submit.prevent="conectarApi">
-          <input
-            v-model="apiUser"
-            placeholder="Usuario API"
-            class="input-texto"
-            @keydown.enter.prevent="conectarApi"
-          />
-          <input
-            v-model="apiPass"
-            type="password"
-            placeholder="Password API"
-            class="input-texto"
-            @keydown.enter.prevent="conectarApi"
-          />
-          <button
-            type="submit"
-            class="boton boton-primario"
-            :disabled="conectando || !puedeConectar"
-          >
-            {{ conectando ? 'Conectando...' : 'Conectar' }}
-          </button>
-          <p v-if="authErrorMsg" class="mensaje-error">{{ authErrorMsg }}</p>
-          <p v-else-if="conectado">Conectado a {{ apiBaseUrl }}</p>
-        </form>
-      </div>
-
-      <div v-if="conectado" class="formulario-registro">
         <h2 class="subtitulo">Nuevo Envio</h2>
         <form class="formulario-campos" @submit.prevent="enviarNotificacion">
           <label>
@@ -321,7 +274,7 @@ async function enviarNotificacion() {
       </div>
     </div>
 
-    <div v-if="conectado" class="panel-card">
+    <div v-if="!initializing && !accessError" class="panel-card">
       <div class="toolbar-line">
         <h2 class="subtitulo subtitulo-inline">Historial de Envios</h2>
         <div class="toolbar-actions">
@@ -375,16 +328,21 @@ async function enviarNotificacion() {
             <tr v-for="item in notificacionesFiltradas" :key="item.id">
               <td>{{ formatCreatedAt(item.created_at) }}</td>
               <td>{{ item.titulo }}</td>
-              <td :title="item.mensaje">{{ getMessagePreview(item.mensaje) }}</td>
+              <td>
+                <details class="notification-message-details">
+                  <summary>{{ getMessagePreview(item.mensaje) }}</summary>
+                  <p>{{ item.mensaje }}</p>
+                </details>
+              </td>
               <td>
                 <span class="scope-pill" :class="item.alcance === 'all' ? 'scope-pill-all' : 'scope-pill-user'">
                   {{ item.alcance === 'all' ? 'Todos' : 'Usuario' }}
                 </span>
               </td>
               <td :title="item.usuarioObjetivo?.email || ''">{{ getTargetLabel(item) }}</td>
-              <td>{{ item.destinatarios_total }}</td>
-              <td>{{ item.destinatarios_leidos }}</td>
-              <td>{{ item.destinatarios_pendientes }}</td>
+              <td><span class="notification-stat notification-stat-sent">{{ item.destinatarios_total }}</span></td>
+              <td><span class="notification-stat notification-stat-read">{{ item.destinatarios_leidos }}</span></td>
+              <td><span class="notification-stat notification-stat-pending">{{ item.destinatarios_pendientes }}</span></td>
               <td>{{ item.creado_por }}</td>
             </tr>
           </tbody>

@@ -1156,6 +1156,69 @@ button {
   backdrop-filter: blur(2px);
 }
 
+.capacity-source-badge,
+.notification-stat {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.18rem 0.48rem;
+  background: #e5f6ed;
+  color: #17623c;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.capacity-source-estimated,
+.notification-stat-pending {
+  background: #fff1cf;
+  color: #865c00;
+}
+
+.notification-stat-sent {
+  background: #e8f1ff;
+  color: #245891;
+}
+
+.notification-stat-read {
+  background: #e5f6ed;
+  color: #17623c;
+}
+
+.capacity-progress {
+  height: 0.55rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #dce6ef;
+}
+
+.capacity-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #2a9d62;
+  transition: width 180ms ease;
+}
+
+.capacity-progress-warning span { background: #d99a16; }
+.capacity-progress-critical span { background: #cf3f45; }
+
+.notification-message-details {
+  min-width: 12rem;
+  max-width: 30rem;
+}
+
+.notification-message-details summary {
+  cursor: pointer;
+  color: #24496d;
+}
+
+.notification-message-details p {
+  margin: 0.55rem 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .kpi-grid-v2 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
