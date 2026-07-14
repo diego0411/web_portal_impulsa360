@@ -516,15 +516,20 @@ async function exportarAExcelConImagenes() {
     if (filtroImpulsador.value) params.set('impulsador', filtroImpulsador.value)
     if (filtroFechaDesde.value) params.set('fechaDesde', filtroFechaDesde.value)
     if (filtroFechaHasta.value) params.set('fechaHasta', filtroFechaHasta.value)
+    params.set('exportVersion', 'links-v2')
 
     const token = session.value?.access_token
     if (!token) throw new Error('Sesion requerida para generar el Excel.')
     const response = await fetch(`${apiBaseUrl}/portal/activations/export-excel?${params}`, {
       headers: { Authorization: `Bearer ${token}` },
+      cache: 'no-store',
     })
     if (!response.ok) {
       const payload = await response.json().catch(() => null)
       throw new Error(payload?.error || `Error HTTP ${response.status}`)
+    }
+    if (response.headers.get('X-Export-Version') !== 'links-v2') {
+      throw new Error('La API respondio con una version antigua de la exportacion. Vuelve a desplegar el backend.')
     }
 
     const rowCount = Number(response.headers.get('X-Export-Row-Count')) || 0

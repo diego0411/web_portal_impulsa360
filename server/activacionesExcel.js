@@ -103,7 +103,7 @@ export async function generateActivacionesExcel({ adminSupabase, bucket, filters
   const rows = await fetchActivaciones(adminSupabase, filters, allowedUserIds)
   const photoLinks = await resolvePhotoLinks(adminSupabase, bucket, rows)
   const workbook = new ExcelJS.Workbook()
-  const worksheet = workbook.addWorksheet('Activaciones', { views: [{ state: 'frozen', ySplit: 1 }] })
+  const worksheet = workbook.addWorksheet('Activaciones', { views: [{ state: 'frozen', ySplit: 2 }] })
   worksheet.columns = [
     ['#', 'numero', 7], ['Creado', 'creado', 26], ['Fecha', 'fecha', 14],
     ['Impulsador', 'impulsador', 24], ['Plaza', 'plaza', 18], ['Distrito', 'distrito', 20],
@@ -126,6 +126,11 @@ export async function generateActivacionesExcel({ adminSupabase, bucket, filters
     cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF101E2E' } }
   })
+  worksheet.insertRow(1, ['Exportación con enlaces v2'])
+  worksheet.mergeCells(1, 1, 1, worksheet.columnCount)
+  const versionCell = worksheet.getCell('A1')
+  versionCell.font = { bold: true, color: { argb: 'FF0563C1' } }
+  versionCell.alignment = { horizontal: 'center' }
 
   rows.forEach((row, index) => worksheet.addRow({
     numero: index + 1, creado: formatCreatedAt(row.created_at), fecha: row.fecha_activacion,
@@ -148,7 +153,7 @@ export async function generateActivacionesExcel({ adminSupabase, bucket, filters
 
   for (const key of ['foto', 'fotoCashIn']) {
     worksheet.getColumn(key).eachCell({ includeEmpty: false }, (cell, rowNumber) => {
-      if (rowNumber > 1 && cell.value?.hyperlink) {
+      if (rowNumber > 2 && cell.value?.hyperlink) {
         cell.font = { color: { argb: 'FF0563C1' }, underline: true }
       }
     })

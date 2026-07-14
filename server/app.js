@@ -627,7 +627,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       res.setHeader('Vary', 'Origin')
       res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS')
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-      res.setHeader('Access-Control-Expose-Headers', 'X-Export-Row-Count,X-Export-Images')
+      res.setHeader('Access-Control-Expose-Headers', 'X-Export-Row-Count,X-Export-Images,X-Export-Version')
     }
 
     if (req.method === 'OPTIONS') {
@@ -751,8 +751,12 @@ export function createAdminApiApp({ env = process.env } = {}) {
     })
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', 'attachment; filename="activaciones.xlsx"')
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0')
+    res.setHeader('CDN-Cache-Control', 'no-store')
+    res.setHeader('Vercel-CDN-Cache-Control', 'no-store')
     res.setHeader('X-Export-Row-Count', String(result.rowCount))
     res.setHeader('X-Export-Images', 'links')
+    res.setHeader('X-Export-Version', 'links-v2')
     res.send(Buffer.from(result.buffer))
   }))
 
