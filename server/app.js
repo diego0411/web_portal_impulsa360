@@ -3,6 +3,29 @@ import express from 'express'
 import { createClient } from '@supabase/supabase-js'
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const ACTIVATION_EDITABLE_FIELDS = new Set([
+  'nombres_cliente',
+  'nombre_comercio',
+  'comercio',
+  'cliente',
+  'telefono_cliente',
+  'email_cliente',
+  'plaza',
+  'ciudad_activacion',
+  'tipo_activacion',
+  'resultado',
+  'estado',
+  'observaciones',
+  'tipo_tienda',
+  'rubro_comercio',
+  'rubro_comercio_otro',
+  'comercio_fuera_mercado',
+  'tipo_error',
+  'descripcion_error',
+  'es_plaza_temporal',
+  'plaza_temporal',
+])
+const ALLOWED_STORE_SIZES = new Set(['Pequeña', 'Mediana', 'Grande'])
 const ALLOWED_USER_ROLES = new Set(['activador', 'lider', 'administrador'])
 const ALLOWED_USER_STATES = new Set(['activo', 'inhabilitado'])
 const REQUIRED_ENV = [
@@ -961,6 +984,132 @@ export function createAdminApiApp({ env = process.env } = {}) {
         return
       }
       res.json({ ok: true, ...payload })
+    })
+  )
+
+  app.patch(
+    '/admin/activaciones/:activacionId',
+    asyncRoute(async (req, res) => {
+      const activacionId = normalizeText(req.params?.activacionId)
+      const editReason = normalizeText(req.body?.motivoEdicion)
+      const changes = req.body?.changes
+      const unexpectedBodyFields = Object.keys(req.body ?? {}).filter(
+        (key) => !['changes', 'motivoEdicion'].includes(key)
+      )
+
+      if (!activacionId) {
+        jsonError(res, 400, 'Parametro activacionId requerido.')
+        return
+      }
+      if (!editReason) {
+        jsonError(res, 400, 'El motivo de edicion es obligatorio.')
+        return
+      }
+      if (unexpectedBodyFields.length) {
+        jsonError(res, 400, `Campos de solicitud no permitidos: ${unexpectedBodyFields.join(', ')}.`)
+        return
+      }
+      if (!changes || typeof changes !== 'object' || Array.isArray(changes)) {
+        jsonError(res, 400, 'changes debe ser un objeto con los campos a modificar.')
+        return
+      }
+
+      const changeKeys = Object.keys(changes)
+      const forbiddenFields = changeKeys.filter((key) => !ACTIVATION_EDITABLE_FIELDS.has(key))
+      if (forbiddenFields.length) {
+        jsonError(res, 400, `Campos no permitidos: ${forbiddenFields.join(', ')}.`)
+        return
+      }
+      if (!changeKeys.length) {
+        jsonError(res, 400, 'No se enviaron cambios para guardar.')
+        return
+      }
+
+      const updatePayload = {}
+      for (const key of changeKeys) {
+        if (['comercio_fuera_mercado', 'es_plaza_temporal'].includes(key)) {
+          if (typeof changes[key] !== 'boolean') {
+            jsonError(res, 400, `${key} debe ser booleano.`)
+            return
+          }
+          updatePayload[key] = changes[key]
+        } else {
+          updatePayload[key] = normalizeNullableText(changes[key])
+        }
+      }
+
+      if (updatePayload.email_cliente && !isValidEmail(updatePayload.email_cliente)) {
+        jsonError(res, 400, 'El correo del cliente no es valido.')
+        return
+      }
+      if (updatePayload.telefono_cliente && !/^\+?[0-9\s()\-]{6,20}$/.test(updatePayload.telefono_cliente)) {
+        jsonError(res, 400, 'El telefono no tiene un formato valido.')
+        return
+      }
+      if (updatePayload.tipo_tienda && !ALLOWED_STORE_SIZES.has(updatePayload.tipo_tienda)) {
+        jsonError(res, 400, 'tipo_tienda debe ser Pequeña, Mediana o Grande.')
+        return
+      }
+
+      const { data: existingRow, error: existingErr } = await adminSupabase
+        .from('activaciones')
+        .select('*')
+        .eq('id', activacionId)
+        .maybeSingle()
+      if (existingErr) {
+        jsonError(res, 500, 'No se pudo leer la activacion.', existingErr.message)
+        return
+      }
+      if (!existingRow?.id) {
+        jsonError(res, 404, 'No se encontro la activacion indicada.')
+        return
+      }
+
+      const actualUpdatePayload = Object.fromEntries(
+        Object.entries(updatePayload).filter(([key, value]) => {
+          const previousValue = existingRow[key] === '' ? null : existingRow[key]
+          return previousValue !== value
+        })
+      )
+      const actualChangeKeys = Object.keys(actualUpdatePayload)
+      if (!actualChangeKeys.length) {
+        jsonError(res, 400, 'No hay cambios nuevos para guardar.')
+        return
+      }
+
+      const mergedRow = { ...existingRow, ...actualUpdatePayload }
+      if (mergedRow.es_plaza_temporal === true && !normalizeText(mergedRow.plaza_temporal)) {
+        jsonError(res, 400, 'plaza_temporal es obligatoria para una plaza temporal.')
+        return
+      }
+      if (normalizeText(mergedRow.rubro_comercio).toLowerCase() === 'otro' &&
+        !normalizeText(mergedRow.rubro_comercio_otro)) {
+        jsonError(res, 400, 'rubro_comercio_otro es obligatorio cuando el rubro es Otro.')
+        return
+      }
+
+      const { data: updatedRow, error: updateErr } = await adminSupabase
+        .from('activaciones')
+        .update(actualUpdatePayload)
+        .eq('id', activacionId)
+        .select('*')
+        .maybeSingle()
+      if (updateErr) {
+        jsonError(res, 500, 'No se pudo actualizar la activacion.', updateErr.message)
+        return
+      }
+      if (!updatedRow?.id) {
+        jsonError(res, 404, 'No se encontro la activacion al guardar los cambios.')
+        return
+      }
+
+      console.info('[admin-api] Activacion editada', {
+        activacionId,
+        camposModificados: actualChangeKeys,
+        motivoEdicion: editReason,
+        fecha: new Date().toISOString(),
+      })
+      res.json({ activation: updatedRow })
     })
   )
 

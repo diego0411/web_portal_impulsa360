@@ -15,6 +15,12 @@ function onActivacionEliminada({ id }) {
   activaciones.value = activaciones.value.filter((item) => item.id !== id)
 }
 
+function onActivacionActualizada({ activation }) {
+  if (!activation?.id) return
+  const index = activaciones.value.findIndex((item) => item.id === activation.id)
+  if (index >= 0) activaciones.value.splice(index, 1, activation)
+}
+
 onMounted(async () => {
   loading.value = true
   errorMsg.value = null
@@ -52,6 +58,7 @@ onMounted(async () => {
         v-else
         :activaciones="activaciones"
         @activacion-eliminada="onActivacionEliminada"
+        @activacion-actualizada="onActivacionActualizada"
       />
     </div>
   </section>
