@@ -37,6 +37,7 @@ const filtroFechaDesde = ref('')
 const filtroFechaHasta = ref('')
 const exportandoExcel = ref(false)
 const deletingActivationId = ref(null)
+const activacionSeleccionada = ref(null)
 const { username: apiUser, password: apiPass, hasCredentials } = useAdminApiAuth()
 
 function getCiudadActivacion(activacion) {
@@ -151,6 +152,87 @@ function formatCreatedAtBolivia(value, { emptyValue = '-' } = {}) {
 
   return boliviaDateTimeFormatter.format(date)
 }
+
+function tieneValor(value) {
+  if (value === null || value === undefined) return false
+  if (typeof value === 'string') return value.trim() !== ''
+  if (Array.isArray(value)) return value.length > 0
+  return true
+}
+
+function esUrl(value) {
+  return typeof value === 'string' && /^https?:\/\//i.test(value)
+}
+
+function etiquetaCampo(key) {
+  const especiales = {
+    id: 'ID del registro', usuario_id: 'ID del usuario', created_at: 'Fecha de registro',
+    fecha_activacion: 'Fecha de activacion', nombres_cliente: 'Nombres del cliente',
+    apellidos_cliente: 'Apellidos del cliente', ci_cliente: 'CI del cliente',
+    telefono_cliente: 'Telefono del cliente', email_cliente: 'Correo del cliente',
+    ciudad_activacion: 'Ciudad de activacion', zona_activacion: 'Distrito o zona',
+    tipo_activacion: 'Tipo de activacion', tipo_comercio: 'Tipo de comercio',
+    tamano_tienda: 'Tamano de tienda', foto_url: 'Fotografia', descargo_app: 'Descargo la app',
+    cash_in: 'Cash-In', cash_out: 'Cash-Out', qr_fisico: 'QR fisico', p2p: 'P2P',
+    hubo_error: 'Hubo error', descripcion_error: 'Descripcion del error',
+  }
+  return especiales[key] ?? key.replace(/_/g, ' ').replace(/^./, (letter) => letter.toUpperCase())
+}
+
+function formatearValor(value, key) {
+  if (typeof value === 'boolean') return value ? 'Si' : 'No'
+  if ((key.includes('fecha') || key.endsWith('_at')) && value) {
+    if (key.endsWith('_at')) return formatCreatedAtBolivia(value)
+    const dateOnly = normalizeDateOnly(value)
+    if (dateOnly) {
+      const [year, month, day] = dateOnly.split('-')
+      return `${day}/${month}/${year}`
+    }
+  }
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+const seccionesDetalleConfig = [
+  { title: 'Datos generales', keys: ['fecha_activacion', 'impulsador', 'ciudad_activacion', 'plaza', 'zona_activacion'] },
+  { title: 'Datos del cliente', keys: ['nombres_cliente', 'apellidos_cliente', 'ci_cliente', 'telefono_cliente', 'email_cliente'] },
+  { title: 'Informacion de la activacion', keys: ['tipo_activacion', 'descargo_app', 'registro', 'cash_in', 'cash_out', 'p2p', 'qr_fisico', 'respaldo'] },
+  { title: 'Informacion del comercio o tienda', keys: ['nombre_comercio', 'comercio', 'cliente', 'tipo_comercio', 'tamano_tienda', 'rubro', 'comercio_fuera_mercado', 'plaza_temporal'] },
+  { title: 'Evidencias y fotografias', keys: ['foto_url', 'foto_cash_in', 'foto_cashin'] },
+  { title: 'Ubicacion', keys: ['latitud', 'longitud', 'direccion', 'ubicacion'] },
+  { title: 'Errores u observaciones', keys: ['hubo_error', 'tipo_error', 'descripcion_error', 'observaciones'] },
+  { title: 'Informacion tecnica del registro', keys: ['id', 'usuario_id', 'created_at', 'updated_at'] },
+]
+
+const seccionesDetalle = computed(() => {
+  const row = activacionSeleccionada.value
+  if (!row) return []
+  const usedKeys = new Set(seccionesDetalleConfig.flatMap((section) => section.keys))
+  const sections = seccionesDetalleConfig.map((section) => ({
+    title: section.title,
+    fields: section.keys
+      .filter((key) => tieneValor(row[key]))
+      .map((key) => ({ key, label: etiquetaCampo(key), value: row[key], image: key.toLowerCase().includes('foto') })),
+  }))
+  const extras = Object.entries(row)
+    .filter(([key, value]) => !usedKeys.has(key) && tieneValor(value))
+    .map(([key, value]) => ({ key, label: etiquetaCampo(key), value, image: key.toLowerCase().includes('foto') }))
+  sections.at(-1).fields.push(...extras)
+  return sections.filter((section) => section.fields.length)
+})
+
+function getClienteComercio(activacion) {
+  return activacion.nombre_comercio ?? activacion.comercio ?? activacion.cliente ??
+    ([activacion.nombres_cliente, activacion.apellidos_cliente].filter(Boolean).join(' ') || '-')
+}
+
+function getResultado(activacion) {
+  if (activacion.hubo_error === true) return 'Con error'
+  return activacion.resultado ?? activacion.estado ?? 'Registrada'
+}
+
+function abrirDetalle(activacion) { activacionSeleccionada.value = activacion }
+function cerrarDetalle() { activacionSeleccionada.value = null }
 
 async function requestAdmin(path, options = {}) {
   return adminApiRequest({
@@ -527,11 +609,11 @@ async function exportarAExcelConImagenes() {
 
     <div class="toolbar-line">
       <div class="toolbar-actions">
-        <button @click="exportarACsv" class="boton-exportar">Exportar CSV</button>
+        <button @click="exportarACsv" class="boton-exportar" :disabled="exportandoExcel || deletingActivationId">Exportar CSV</button>
         <button
           @click="exportarAExcelConImagenes"
           class="boton-exportar boton-exportar-excel"
-          :disabled="exportandoExcel"
+          :disabled="exportandoExcel || deletingActivationId"
         >
           {{ exportandoExcel ? 'Generando Excel...' : 'Exportar Excel + Imagenes' }}
         </button>
@@ -543,97 +625,62 @@ async function exportarAExcelConImagenes() {
       No hay registros para los filtros seleccionados.
     </p>
 
-    <div v-else class="table-wrap activaciones-table-wrap">
+    <div v-else class="table-wrap activaciones-table-wrap activaciones-resumen-wrap">
       <table class="tabla-activaciones">
         <thead>
           <tr>
-            <th>#</th>
-            <th>Creado</th>
-            <th>Impulsador</th>
-            <th>Plaza</th>
-            <th>Distrito</th>
             <th>Fecha</th>
-            <th>Nombres</th>
-            <th>Apellidos</th>
-            <th>CI</th>
-            <th>Telefono</th>
-            <th>Email</th>
-            <th>Descargo App</th>
-            <th>Registro</th>
-            <th>Cash In</th>
-            <th>Cash Out</th>
-            <th>P2P</th>
-            <th>QR Fisico</th>
-            <th>Respaldo</th>
-            <th>Error</th>
-            <th>Descripcion Error</th>
+            <th>Activador o impulsador</th>
+            <th>Cliente o comercio</th>
             <th>Tipo Activacion</th>
-            <th>Tipo Comercio</th>
-            <th>Tamano Tienda</th>
-            <th>Foto</th>
-            <th>Latitud</th>
-            <th>Longitud</th>
-            <th>Usuario ID</th>
+            <th>Plaza</th>
+            <th>Estado o resultado</th>
             <th>Acciones</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(activacion, index) in activacionesFiltradas" :key="getRowKey(activacion, index)">
-            <td>{{ index + 1 }}</td>
-            <td>{{ formatCreatedAtBolivia(activacion.created_at) }}</td>
-            <td>{{ activacion.impulsador }}</td>
-            <td>{{ getCiudadActivacion(activacion) }}</td>
-            <td>{{ activacion.zona_activacion }}</td>
-            <td>{{ activacion.fecha_activacion }}</td>
-            <td>{{ activacion.nombres_cliente }}</td>
-            <td>{{ activacion.apellidos_cliente }}</td>
-            <td>{{ activacion.ci_cliente }}</td>
-            <td>{{ activacion.telefono_cliente }}</td>
-            <td>{{ activacion.email_cliente }}</td>
-            <td>{{ activacion.descargo_app ? 'Si' : 'No' }}</td>
-            <td>{{ activacion.registro ? 'Si' : 'No' }}</td>
-            <td>{{ activacion.cash_in ? 'Si' : 'No' }}</td>
-            <td>{{ activacion.cash_out ? 'Si' : 'No' }}</td>
-            <td>{{ activacion.p2p ? 'Si' : 'No' }}</td>
-            <td>{{ activacion.qr_fisico ? 'Si' : 'No' }}</td>
-            <td>{{ activacion.respaldo ? 'Si' : 'No' }}</td>
-            <td>{{ activacion.hubo_error ? 'Si' : 'No' }}</td>
-            <td>{{ activacion.descripcion_error }}</td>
-            <td>{{ activacion.tipo_activacion }}</td>
-            <td>{{ activacion.tipo_comercio }}</td>
-            <td>{{ activacion.tamano_tienda }}</td>
+          <tr v-for="(activacion, index) in activacionesFiltradas" :key="getRowKey(activacion, index)" class="activacion-row" tabindex="0" @click="abrirDetalle(activacion)" @keydown.enter="abrirDetalle(activacion)">
+            <td>{{ activacion.fecha_activacion || formatCreatedAtBolivia(activacion.created_at) }}</td>
+            <td>{{ activacion.impulsador || '-' }}</td>
+            <td>{{ getClienteComercio(activacion) }}</td>
+            <td>{{ activacion.tipo_activacion || '-' }}</td>
+            <td>{{ getCiudadActivacion(activacion) || '-' }}</td>
+            <td><span class="resultado-etiqueta" :class="{ 'resultado-error': activacion.hubo_error === true }">{{ getResultado(activacion) }}</span></td>
             <td>
-              <a
-                v-if="activacion.foto_url"
-                :href="getFotoPublicUrl(activacion.foto_url)"
-                target="_blank"
-                rel="noreferrer"
-                class="link-foto"
-              >
-                Ver foto
-              </a>
-            </td>
-            <td>{{ activacion.latitud }}</td>
-            <td>{{ activacion.longitud }}</td>
-            <td>{{ activacion.usuario_id }}</td>
-            <td>
-              <button
-                class="boton boton-eliminar"
-                :disabled="!hasCredentials || deletingActivationId === activacion.id || !activacion.id"
-                @click="eliminarActivacion(activacion)"
-              >
-                {{
-                  deletingActivationId === activacion.id
-                    ? 'Eliminando...'
-                    : !activacion.id
-                      ? 'Sin ID'
-                      : 'Eliminar'
-                }}
-              </button>
+              <div class="acciones">
+                <button class="boton boton-editar" @click.stop="abrirDetalle(activacion)">Ver detalle</button>
+                <button class="boton boton-eliminar" :disabled="!hasCredentials || deletingActivationId === activacion.id || !activacion.id" @click.stop="eliminarActivacion(activacion)">{{ deletingActivationId === activacion.id ? 'Eliminando...' : !activacion.id ? 'Sin ID' : 'Eliminar' }}</button>
+              </div>
             </td>
           </tr>
         </tbody>
       </table>
     </div>
+
+    <teleport to="body">
+      <div v-if="activacionSeleccionada" class="detalle-overlay" @click.self="cerrarDetalle">
+        <aside class="detalle-activacion" role="dialog" aria-modal="true" aria-label="Detalle de activacion">
+          <header class="detalle-header">
+            <div><p class="view-kicker">Registro de activacion</p><h3 class="detalle-title">{{ getClienteComercio(activacionSeleccionada) }}</h3></div>
+            <button type="button" class="detalle-close" aria-label="Cerrar detalle" @click="cerrarDetalle">×</button>
+          </header>
+          <div class="detalle-body">
+            <section v-for="section in seccionesDetalle" :key="section.title" class="detalle-section">
+              <h4>{{ section.title }}</h4>
+              <dl class="detalle-grid">
+                <div v-for="field in section.fields" :key="field.key" class="detalle-field" :class="{ 'detalle-field-wide': field.image || typeof field.value === 'object' }">
+                  <dt>{{ field.label }}</dt>
+                  <dd v-if="field.image">
+                    <a :href="getFotoPublicUrl(field.value)" target="_blank" rel="noreferrer"><img :src="getFotoPublicUrl(field.value)" :alt="field.label" class="detalle-thumbnail"></a>
+                  </dd>
+                  <dd v-else-if="esUrl(field.value)"><a :href="field.value" target="_blank" rel="noreferrer" class="link-foto">Abrir enlace</a></dd>
+                  <dd v-else>{{ formatearValor(field.value, field.key) }}</dd>
+                </div>
+              </dl>
+            </section>
+          </div>
+        </aside>
+      </div>
+    </teleport>
   </div>
 </template>
