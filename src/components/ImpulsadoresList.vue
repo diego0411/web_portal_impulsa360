@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { supabase } from '../lib/supabaseClient'
+import { portalRequest } from '../lib/activacionesService'
 import { containsNormalized } from '../lib/textUtils'
 
 const impulsadores = ref([])
@@ -24,16 +24,12 @@ onMounted(async () => {
   loading.value = true
   errorMsg.value = null
 
-  const { data, error } = await supabase
-    .from('activadores')
-    .select('usuario_id, nombre, email, plaza')
-    .order('nombre', { ascending: true })
-
-  if (error) {
+  try {
+    const data = await portalRequest('/portal/users')
+    impulsadores.value = data.users ?? []
+  } catch (error) {
     console.error('Error al cargar impulsadores:', error)
     errorMsg.value = 'Error al obtener los impulsadores.'
-  } else {
-    impulsadores.value = data ?? []
   }
 
   loading.value = false

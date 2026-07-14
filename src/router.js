@@ -1,6 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { initializeAuth, useAuth } from './lib/authStore'
 
 const routes = [
+  { path: '/login', component: () => import('./pages/LoginPage.vue'), meta: { public: true } },
   { path: '/', redirect: '/activaciones' },
   {
     path: '/activaciones',
@@ -31,4 +33,13 @@ const routes = [
 export const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes,
+})
+
+router.beforeEach(async (to) => {
+  await initializeAuth()
+  const { session, profile } = useAuth()
+  if (to.meta.public) return profile.value ? '/activaciones' : true
+  if (!session.value || !profile.value) return { path: '/login', query: { redirect: to.fullPath } }
+  if (profile.value.rol === 'lider' && ['/usuarios', '/notificaciones', '/capacidad'].includes(to.path)) return '/activaciones'
+  return true
 })

@@ -1,34 +1,22 @@
 import { supabase } from './supabaseClient'
 
-export async function fetchAllActivaciones({ pageSize = 1000, columns = '*' } = {}) {
+const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(/\/$/, '')
+
+export async function portalRequest(path) {
+  const { data } = await supabase.auth.getSession()
+  if (!data.session?.access_token) throw new Error('Sesion requerida.')
+  const response = await fetch(`${apiBaseUrl}${path}`, { headers: { Authorization: `Bearer ${data.session.access_token}` } })
+  const payload = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(payload?.error || `Error HTTP ${response.status}`)
+  return payload
+}
+
+export async function fetchAllActivaciones() {
   const rows = []
-  let from = 0
-  let to = pageSize - 1
-
-  while (true) {
-    const { data, error } = await supabase
-      .from('activaciones')
-      .select(columns)
-      .order('created_at', { ascending: false })
-      .range(from, to)
-
-    if (error) {
-      throw error
-    }
-
-    if (!data || data.length === 0) {
-      break
-    }
-
-    rows.push(...data)
-
-    if (data.length < pageSize) {
-      break
-    }
-
-    from += pageSize
-    to += pageSize
+  for (let from = 0; ; from += 1000) {
+    const payload = await portalRequest(`/portal/activations?from=${from}&to=${from + 999}`)
+    const page = payload.activations ?? []
+    rows.push(...page)
+    if (page.length < 1000) return rows
   }
-
-  return rows
 }

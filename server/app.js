@@ -634,10 +634,28 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
   app.use(express.json())
 
-  function requireAdminBasicAuth(req, res, next) {
-    const parsed = parseBasicAuth(req.headers.authorization)
+  async function resolvePortalUser(req) {
+    const authorization = typeof req.headers.authorization === 'string' ? req.headers.authorization : ''
+    if (!authorization.startsWith('Bearer ')) return null
+    const { data: authData, error: authError } = await adminSupabase.auth.getUser(authorization.slice(7))
+    if (authError || !authData.user) return null
+    const { data: profile } = await adminSupabase.from('activadores').select('usuario_id,nombre,email,rol,estado,lider_id').eq('usuario_id', authData.user.id).maybeSingle()
+    if (!profile || profile.estado !== 'activo' || !['administrador', 'lider'].includes(profile.rol)) return null
+    return profile
+  }
 
+  async function requirePortalAuth(req, res, next) {
+    const profile = await resolvePortalUser(req)
+    if (!profile) { jsonError(res, 401, 'Sesion invalida o usuario sin permisos.'); return }
+    req.portalUser = profile
+    next()
+  }
+
+  async function requireAdminBasicAuth(req, res, next) {
+    const parsed = parseBasicAuth(req.headers.authorization)
     if (!parsed) {
+      const profile = await resolvePortalUser(req)
+      if (profile?.rol === 'administrador') { req.portalUser = profile; next(); return }
       res.setHeader('WWW-Authenticate', 'Basic realm="admin-api"')
       jsonError(res, 401, 'Credenciales requeridas.')
       return
@@ -658,6 +676,31 @@ export function createAdminApiApp({ env = process.env } = {}) {
   app.get('/healthz', (_req, res) => {
     res.json({ ok: true })
   })
+
+  app.use('/portal', requirePortalAuth)
+  app.get('/portal/me', (req, res) => res.json({ profile: req.portalUser }))
+  app.get('/portal/users', asyncRoute(async (req, res) => {
+    let query = adminSupabase.from('activadores').select('usuario_id,nombre,email,plaza,rol,estado,lider_id').order('nombre')
+    if (req.portalUser.rol === 'lider') query = query.eq('lider_id', req.portalUser.usuario_id)
+    const { data, error } = await query
+    if (error) { jsonError(res, 500, 'No se pudo obtener usuarios.', error.message); return }
+    res.json({ users: data ?? [] })
+  }))
+  app.get('/portal/activations', asyncRoute(async (req, res) => {
+    const from = Math.max(0, Number.parseInt(String(req.query.from ?? '0'), 10) || 0)
+    const to = Math.min(from + 999, Math.max(from, Number.parseInt(String(req.query.to ?? from + 999), 10) || from + 999))
+    let query = adminSupabase.from('activaciones').select('*').order('created_at', { ascending: false })
+    if (req.portalUser.rol === 'lider') {
+      const { data: team, error: teamError } = await adminSupabase.from('activadores').select('usuario_id').eq('lider_id', req.portalUser.usuario_id)
+      if (teamError) { jsonError(res, 500, 'No se pudo resolver el equipo.', teamError.message); return }
+      const ids = (team ?? []).map((item) => item.usuario_id).filter(Boolean)
+      if (!ids.length) { res.json({ activations: [] }); return }
+      query = query.in('usuario_id', ids)
+    }
+    const { data, error } = await query.range(from, to)
+    if (error) { jsonError(res, 500, 'No se pudo obtener activaciones.', error.message); return }
+    res.json({ activations: data ?? [] })
+  }))
 
   app.use('/admin', requireAdminBasicAuth)
 
