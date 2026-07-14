@@ -63,6 +63,10 @@ function normalizeNullableText(value) {
   return normalized || null
 }
 
+function normalizeOrganizationName(value) {
+  return normalizeText(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+}
+
 function normalizeEmail(value) {
   return normalizeText(value).toLowerCase()
 }
@@ -611,6 +615,115 @@ export function createAdminApiApp({ env = process.env } = {}) {
     },
   })
 
+  async function enrichUsersWithOrganization(users) {
+    if (!users.length) return users
+    const teamIds = [...new Set(users.map((user) => user.equipo_id).filter(Boolean))]
+    const userIds = users.map((user) => user.usuario_id).filter(Boolean)
+    if (!teamIds.length && !userIds.length) return users
+
+    try {
+      const now = new Date().toISOString()
+      let [{ data: teams, error: teamsError }, { data: temporaryPlazas, error: temporaryError }] =
+        await Promise.all([
+          teamIds.length
+            ? adminSupabase.from('equipos').select('id,numero,nombre,facturador_id,lider_actual_id,plaza_id').in('id', teamIds)
+            : Promise.resolve({ data: [], error: null }),
+          userIds.length
+            ? adminSupabase.from('activador_plaza_temporal')
+              .select('activador_id,plaza_temporal,inicio,fin,motivo,autorizado_por')
+              .in('activador_id', userIds).lte('inicio', now).gt('fin', now).is('cancelado_at', null)
+            : Promise.resolve({ data: [], error: null }),
+        ])
+      if (teamsError && teamIds.length) {
+        const legacyTeams = await adminSupabase.from('equipos')
+          .select('id,numero,nombre,facturador_id,lider_actual_id').in('id', teamIds)
+        teams = legacyTeams.data
+        teamsError = legacyTeams.error
+      }
+      if (teamsError || temporaryError) return users
+
+      const facturadorIds = [...new Set((teams ?? []).map((team) => team.facturador_id).filter(Boolean))]
+      const plazaIds = [...new Set((teams ?? []).map((team) => team.plaza_id).filter(Boolean))]
+      const [{ data: billers, error: billersError }, { data: plazas, error: plazasError }] = await Promise.all([
+        facturadorIds.length
+          ? adminSupabase.from('facturadores').select('id,codigo,nombre').in('id', facturadorIds)
+          : Promise.resolve({ data: [], error: null }),
+        plazaIds.length
+          ? adminSupabase.from('plazas').select('id,nombre').in('id', plazaIds)
+          : Promise.resolve({ data: [], error: null }),
+      ])
+      if (billersError || plazasError) return users
+
+      const teamsById = new Map((teams ?? []).map((team) => [team.id, team]))
+      const billersById = new Map((billers ?? []).map((biller) => [biller.id, biller]))
+      const plazasById = new Map((plazas ?? []).map((plaza) => [plaza.id, plaza]))
+      const temporaryByUser = new Map((temporaryPlazas ?? []).map((item) => [item.activador_id, item]))
+      return users.map((user) => {
+        const team = teamsById.get(user.equipo_id)
+        const biller = billersById.get(team?.facturador_id)
+        const temporary = temporaryByUser.get(user.usuario_id)
+        const teamPlaza = plazasById.get(team?.plaza_id)
+        return {
+          ...user,
+          plaza_base: user.plaza_base ?? user.plaza ?? null,
+          plaza_efectiva: temporary?.plaza_temporal ?? user.plaza_base ?? user.plaza ?? null,
+          plaza_temporal_activa: Boolean(temporary),
+          plaza_temporal_vigente: temporary ?? null,
+          plaza_id: team?.plaza_id ?? null,
+          plaza_nombre: teamPlaza?.nombre ?? user.plaza_base ?? user.plaza ?? null,
+          equipo_numero: team?.numero ?? null,
+          equipo_nombre: team?.nombre ?? null,
+          facturador_id: biller?.id ?? null,
+          facturador_codigo: biller?.codigo ?? null,
+          facturador_nombre: biller?.nombre ?? null,
+        }
+      })
+    } catch {
+      // Compatibilidad mientras la migracion organizacional aun no fue aplicada.
+      return users
+    }
+  }
+
+  async function resolveTeamIdForLeader(leaderId, plaza) {
+    try {
+      const normalizedPlaza = normalizeOrganizationName(plaza)
+      if (!normalizedPlaza) return null
+      const { data: plazaRow, error: plazaError } = await adminSupabase.from('plazas')
+        .select('id').eq('nombre_normalizado', normalizedPlaza).maybeSingle()
+      if (plazaError) {
+        let legacyQuery = adminSupabase.from('equipos').select('id').eq('activo', true)
+        legacyQuery = leaderId
+          ? legacyQuery.eq('lider_actual_id', leaderId)
+          : legacyQuery.eq('nombre', 'Equipo sin asignar')
+        const { data: legacyTeam, error: legacyError } = await legacyQuery.order('numero').limit(1).maybeSingle()
+        return legacyError ? null : legacyTeam?.id ?? null
+      }
+      if (!plazaRow) return null
+      let query = adminSupabase.from('equipos').select('id').eq('activo', true).eq('plaza_id', plazaRow.id)
+      query = leaderId ? query.eq('lider_actual_id', leaderId) : query.eq('nombre', 'Equipo sin asignar')
+      const { data, error } = await query.order('numero').limit(1).maybeSingle()
+      return error ? null : data?.id ?? null
+    } catch {
+      return null
+    }
+  }
+
+  async function resolveOrCreatePlaza(nombre) {
+    const normalized = normalizeOrganizationName(nombre)
+    if (!normalized) return null
+    const { data: existing, error: readError } = await adminSupabase.from('plazas')
+      .select('id').eq('nombre_normalizado', normalized).maybeSingle()
+    if (!readError && existing) return existing.id
+    if (readError) return null
+    const { data: created, error: createError } = await adminSupabase.from('plazas')
+      .insert({ nombre: normalizeText(nombre), nombre_normalizado: normalized })
+      .select('id').single()
+    if (!createError) return created.id
+    const { data: concurrent } = await adminSupabase.from('plazas')
+      .select('id').eq('nombre_normalizado', normalized).maybeSingle()
+    return concurrent?.id ?? null
+  }
+
   const app = express()
   app.set('trust proxy', true)
 
@@ -690,7 +803,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
   app.use('/portal', requirePortalAuth)
   app.get('/portal/me', (req, res) => res.json({ profile: req.portalUser }))
   app.get('/portal/users', asyncRoute(async (req, res) => {
-    let query = adminSupabase.from('activadores').select('usuario_id,nombre,email,plaza,rol,estado,lider_id').order('nombre')
+    let query = adminSupabase.from('activadores').select('*').order('nombre')
     if (req.portalUser.rol === 'lider') query = query.eq('lider_id', req.portalUser.usuario_id)
     const { data, error } = await query
     if (error) { jsonError(res, 500, 'No se pudo obtener usuarios.', error.message); return }
@@ -705,7 +818,8 @@ export function createAdminApiApp({ env = process.env } = {}) {
       if (leadersError) { jsonError(res, 500, 'No se pudo resolver los lideres.', leadersError.message); return }
       leaderNames = new Map((leaders ?? []).map((leader) => [leader.usuario_id, leader.nombre]))
     }
-    res.json({ users: users.map((item) => ({ ...item, lider_nombre: leaderNames.get(item.lider_id) ?? null })) })
+    const resolvedUsers = users.map((item) => ({ ...item, lider_nombre: leaderNames.get(item.lider_id) ?? null }))
+    res.json({ users: await enrichUsersWithOrganization(resolvedUsers) })
   }))
   app.get('/portal/activations', asyncRoute(async (req, res) => {
     const from = Math.max(0, Number.parseInt(String(req.query.from ?? '0'), 10) || 0)
@@ -771,7 +885,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
     asyncRoute(async (_req, res) => {
       const { data, error } = await adminSupabase
         .from('activadores')
-        .select('usuario_id, email, nombre, plaza, rol, estado, lider_id, inhabilitado_at, motivo_inhabilitacion')
+        .select('*')
         .order('nombre', { ascending: true })
 
       if (error) {
@@ -779,7 +893,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
         return
       }
 
-      res.json({ users: data ?? [] })
+      res.json({ users: await enrichUsersWithOrganization(data ?? []) })
     })
   )
 
@@ -799,6 +913,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const password = typeof rawPassword === 'string' ? rawPassword : ''
       const nombre = normalizeText(rawNombre)
       const plaza = normalizeNullableText(rawPlaza)
+      const teamId = rol === 'activador' ? await resolveTeamIdForLeader(liderId, plaza) : null
 
       if (!email || !password || !nombre) {
         jsonError(res, 400, 'email, password y nombre son obligatorios.')
@@ -857,6 +972,10 @@ export function createAdminApiApp({ env = process.env } = {}) {
         inhabilitado_at: estado === 'inhabilitado' ? new Date().toISOString() : null,
         motivo_inhabilitacion: estado === 'inhabilitado' ? motivoInhabilitacion : null,
       }
+      if (teamId) {
+        insertedUser.equipo_id = teamId
+        insertedUser.plaza_base = plaza
+      }
 
       const { error: insertErr } = await adminSupabase.from('activadores').insert(insertedUser)
 
@@ -902,6 +1021,71 @@ export function createAdminApiApp({ env = process.env } = {}) {
         return
       }
 
+      res.json({ ok: true })
+    })
+  )
+
+  app.post(
+    '/admin/users/:userId/temporary-plaza',
+    asyncRoute(async (req, res) => {
+      const userId = normalizeText(req.params?.userId)
+      const plazaTemporal = normalizeText(req.body?.plaza_temporal)
+      const inicio = new Date(req.body?.inicio)
+      const fin = new Date(req.body?.fin)
+      const motivo = normalizeText(req.body?.motivo)
+      const authorizedBy = req.portalUser?.usuario_id
+      if (!userId || !plazaTemporal || !motivo || Number.isNaN(inicio.getTime()) || Number.isNaN(fin.getTime()) || fin <= inicio) {
+        jsonError(res, 400, 'activador, plaza temporal, inicio, fin y motivo validos son obligatorios.')
+        return
+      }
+      if (!authorizedBy) {
+        jsonError(res, 400, 'La asignacion temporal requiere una sesion administrativa identificable.')
+        return
+      }
+      const { data: user, error: userError } = await adminSupabase.from('activadores')
+        .select('usuario_id,rol,estado').eq('usuario_id', userId).maybeSingle()
+      if (userError || !user || user.rol !== 'activador' || user.estado !== 'activo') {
+        jsonError(res, 400, 'La plaza temporal solo puede asignarse a un activador activo.', userError?.message)
+        return
+      }
+      const temporaryPlazaId = await resolveOrCreatePlaza(plazaTemporal)
+      const temporaryPayload = {
+        activador_id: userId,
+        plaza_temporal: plazaTemporal,
+        inicio: inicio.toISOString(),
+        fin: fin.toISOString(),
+        motivo,
+        autorizado_por: authorizedBy,
+      }
+      if (temporaryPlazaId) temporaryPayload.plaza_temporal_id = temporaryPlazaId
+      const { data, error } = await adminSupabase.from('activador_plaza_temporal')
+        .insert(temporaryPayload).select('*').single()
+      if (error) {
+        jsonError(res, error.code === '23P01' ? 409 : 500,
+          error.code === '23P01' ? 'El periodo se solapa con otra plaza temporal.' : 'No se pudo asignar la plaza temporal.', error.message)
+        return
+      }
+      res.status(201).json({ assignment: data })
+    })
+  )
+
+  app.delete(
+    '/admin/users/:userId/temporary-plaza',
+    asyncRoute(async (req, res) => {
+      const now = new Date().toISOString()
+      const authorizedBy = req.portalUser?.usuario_id
+      if (!authorizedBy) {
+        jsonError(res, 400, 'La cancelacion requiere una sesion administrativa identificable.')
+        return
+      }
+      const { error } = await adminSupabase.from('activador_plaza_temporal').update({
+        cancelado_at: now,
+        cancelado_por: authorizedBy,
+      }).eq('activador_id', req.params.userId).is('cancelado_at', null).lte('inicio', now).gt('fin', now)
+      if (error) {
+        jsonError(res, 500, 'No se pudo cancelar la plaza temporal.', error.message)
+        return
+      }
       res.json({ ok: true })
     })
   )
@@ -954,7 +1138,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
       const { data: previousRow, error: previousRowErr } = await adminSupabase
         .from('activadores')
-        .select('nombre, plaza, email, rol, estado, lider_id, inhabilitado_at, motivo_inhabilitacion')
+        .select('*')
         .eq('usuario_id', userId)
         .maybeSingle()
 
@@ -1010,6 +1194,11 @@ export function createAdminApiApp({ env = process.env } = {}) {
           : null,
         motivo_inhabilitacion: estado === 'inhabilitado' ? motivoInhabilitacion : null,
       }
+      const teamId = rol === 'activador' ? await resolveTeamIdForLeader(liderId, plaza) : null
+      if (teamId) {
+        tableUpdatePayload.equipo_id = teamId
+        tableUpdatePayload.plaza_base = plaza
+      }
       if (shouldUpdateEmail) {
         tableUpdatePayload.email = email
       }
@@ -1049,9 +1238,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       )
 
       if (updateAuthErr) {
-        await adminSupabase
-          .from('activadores')
-          .update({
+        const rollbackPayload = {
             nombre: previousRow.nombre,
             plaza: previousRow.plaza,
             email: previousRow.email ?? null,
@@ -1060,7 +1247,12 @@ export function createAdminApiApp({ env = process.env } = {}) {
             lider_id: previousRow.lider_id,
             inhabilitado_at: previousRow.inhabilitado_at,
             motivo_inhabilitacion: previousRow.motivo_inhabilitacion,
-          })
+          }
+        if (Object.prototype.hasOwnProperty.call(previousRow, 'equipo_id')) rollbackPayload.equipo_id = previousRow.equipo_id
+        if (Object.prototype.hasOwnProperty.call(previousRow, 'plaza_base')) rollbackPayload.plaza_base = previousRow.plaza_base
+        await adminSupabase
+          .from('activadores')
+          .update(rollbackPayload)
           .eq('usuario_id', userId)
 
         jsonError(

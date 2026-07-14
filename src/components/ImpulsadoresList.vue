@@ -36,7 +36,7 @@ onMounted(async () => {
       const data = await portalRequest('/portal/users')
       impulsadores.value = data.users ?? []
     } else {
-      const { data, error } = await supabase.from('activadores').select('usuario_id,nombre,email,plaza,rol,estado,lider_id').order('nombre')
+      const { data, error } = await supabase.from('activadores').select('*').order('nombre')
       if (error) throw error
       impulsadores.value = data ?? []
     }
@@ -107,6 +107,7 @@ onMounted(async () => {
             <th>Rol</th>
             <th>Estado</th>
             <th>Lider</th>
+            <th>Equipo</th>
           </tr>
         </thead>
         <tbody>
@@ -117,10 +118,16 @@ onMounted(async () => {
             <td>{{ index + 1 }}</td>
             <td>{{ impulsador.nombre }}</td>
             <td>{{ impulsador.email }}</td>
-            <td>{{ impulsador.plaza }}</td>
+            <td>{{ impulsador.plaza_nombre || impulsador.plaza_base || impulsador.plaza }}</td>
             <td>{{ impulsador.rol || '-' }}</td>
             <td><span class="scope-pill" :class="impulsador.estado === 'inhabilitado' ? 'scope-pill-user' : 'scope-pill-all'">{{ impulsador.estado || 'Sin estado' }}</span></td>
             <td>{{ nombreLider(impulsador) }}</td>
+            <td>
+              <span>{{ impulsador.equipo_numero ? `#${impulsador.equipo_numero}` : '-' }}</span>
+              <span v-if="impulsador.plaza_temporal_activa" class="scope-pill scope-pill-user">
+                Temporal: {{ impulsador.plaza_efectiva }}
+              </span>
+            </td>
           </tr>
         </tbody>
       </table>

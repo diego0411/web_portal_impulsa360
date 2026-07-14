@@ -10,7 +10,7 @@ const boliviaDateTimeFormatter = new Intl.DateTimeFormat('es-BO', {
 })
 
 function getCiudad(row) {
-  return row.ciudad_activacion ?? row.plaza ?? ''
+  return row.plaza_efectiva_registro ?? row.ciudad_activacion ?? row.plaza ?? ''
 }
 
 function yesNo(value) {
@@ -107,6 +107,7 @@ export async function generateActivacionesExcel({ adminSupabase, bucket, filters
   worksheet.columns = [
     ['#', 'numero', 7], ['Creado', 'creado', 26], ['Fecha', 'fecha', 14],
     ['Impulsador', 'impulsador', 24], ['Plaza', 'plaza', 18], ['Distrito', 'distrito', 20],
+    ['Equipo', 'equipo', 20], ['Facturador', 'facturador', 22], ['Lider vigente', 'liderVigente', 24],
     ['Nombres Cliente', 'nombres', 24], ['Apellidos Cliente', 'apellidos', 24],
     ['CI Cliente', 'ci', 14], ['Telefono Cliente', 'telefono', 16], ['Email Cliente', 'email', 28],
     ['Descargo App', 'descargo', 14], ['Registro', 'registro', 12], ['Cash In', 'cashIn', 10],
@@ -135,6 +136,8 @@ export async function generateActivacionesExcel({ adminSupabase, bucket, filters
   rows.forEach((row, index) => worksheet.addRow({
     numero: index + 1, creado: formatCreatedAt(row.created_at), fecha: row.fecha_activacion,
     impulsador: row.impulsador, plaza: getCiudad(row), distrito: row.zona_activacion,
+    equipo: row.equipo_nombre_registro || (row.equipo_numero_registro ? `Equipo #${row.equipo_numero_registro}` : ''),
+    facturador: row.facturador_nombre_registro, liderVigente: row.lider_nombre_registro,
     nombres: row.nombres_cliente, apellidos: row.apellidos_cliente, ci: row.ci_cliente,
     telefono: row.telefono_cliente, email: row.email_cliente, descargo: yesNo(row.descargo_app),
     registro: yesNo(row.registro), cashIn: yesNo(row.cash_in), cashOut: yesNo(row.cash_out),

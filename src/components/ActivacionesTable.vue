@@ -52,6 +52,7 @@ const canEditActivaciones = computed(() =>
 
 function getCiudadActivacion(activacion) {
   return (
+    activacion?.plaza_efectiva_registro ??
     activacion?.ciudad_activacion ??
     activacion?.plaza ??
     ''
@@ -448,6 +449,12 @@ const columnasExportacion = [
   ['Impulsador', (row) => row.impulsador],
   ['Plaza', (row) => getCiudadActivacion(row)],
   ['Distrito', (row) => row.zona_activacion],
+  ['Equipo', (row) => row.equipo_nombre_registro ?? row.equipo_numero_registro],
+  ['Facturador', (row) => row.facturador_nombre_registro],
+  ['Lider Vigente', (row) => row.lider_nombre_registro],
+  ['Plaza Base', (row) => row.plaza_base_registro],
+  ['Plaza ID', (row) => row.plaza_id_registro],
+  ['Plaza Efectiva', (row) => row.plaza_efectiva_registro],
   ['Nombres Cliente', (row) => row.nombres_cliente],
   ['Apellidos Cliente', (row) => row.apellidos_cliente],
   ['CI Cliente', (row) => row.ci_cliente],
