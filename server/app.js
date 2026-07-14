@@ -2039,11 +2039,19 @@ export function createAdminApiApp({ env = process.env } = {}) {
     asyncRoute(async (req, res) => {
       const limit = parseLimit(req.query?.limit, { fallback: 60, min: 1, max: 300 })
 
-      const { data: notifications, error: notificationsErr } = await adminSupabase
+      let { data: notifications, error: notificationsErr } = await adminSupabase
         .from('notificaciones')
-        .select('id, titulo, mensaje, alcance, usuario_objetivo_id, creado_por, created_at')
+        .select('id, titulo, mensaje, alcance, usuario_objetivo_id, tipo_audiencia, rol_objetivo, destinatarios_total, creado_por, created_at')
         .order('created_at', { ascending: false })
         .limit(limit)
+
+      if (notificationsErr && isMissingOrganizationSchema(notificationsErr)) {
+        const legacyResult = await adminSupabase.from('notificaciones')
+          .select('id, titulo, mensaje, alcance, usuario_objetivo_id, creado_por, created_at')
+          .order('created_at', { ascending: false }).limit(limit)
+        notifications = legacyResult.data
+        notificationsErr = legacyResult.error
+      }
 
       if (notificationsErr) {
         jsonError(
@@ -2128,6 +2136,8 @@ export function createAdminApiApp({ env = process.env } = {}) {
           titulo: item.titulo,
           mensaje: item.mensaje,
           alcance: item.alcance,
+          tipo_audiencia: item.tipo_audiencia ?? (item.alcance === 'user' ? 'users' : 'all'),
+          rol_objetivo: item.rol_objetivo ?? null,
           usuarioObjetivo: item.usuario_objetivo_id
             ? usersMap[item.usuario_objetivo_id] ?? {
                 usuario_id: item.usuario_objetivo_id,
@@ -2137,7 +2147,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
             : null,
           creado_por: item.creado_por,
           created_at: item.created_at,
-          destinatarios_total: stats.total,
+          destinatarios_total: item.destinatarios_total ?? stats.total,
           destinatarios_leidos: stats.read,
           destinatarios_pendientes: Math.max(0, stats.total - stats.read),
         }
@@ -2154,11 +2164,20 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const rawMessage = req.body?.mensaje
       const rawScope = req.body?.alcance
       const rawTargetUserId = req.body?.usuarioObjetivoId
+      const rawAudience = req.body?.tipoAudiencia
+      const targetRole = normalizeText(req.body?.rolObjetivo)
+      const requestedUserIds = Array.isArray(req.body?.usuarioObjetivoIds)
+        ? req.body.usuarioObjetivoIds.map(normalizeText).filter(Boolean)
+        : []
 
       const title = normalizeText(rawTitle)
       const message = normalizeText(rawMessage)
-      const scope = rawScope === 'user' ? 'user' : rawScope === 'all' ? 'all' : ''
+      const audience = ['all', 'role', 'users'].includes(rawAudience)
+        ? rawAudience
+        : rawScope === 'user' ? 'users' : rawScope === 'all' ? 'all' : ''
+      const scope = audience === 'users' ? 'user' : 'all'
       const targetUserId = normalizeText(rawTargetUserId)
+      const specificUserIds = [...new Set([...requestedUserIds, ...(targetUserId ? [targetUserId] : [])])]
       const createdBy = normalizeText(req.portalUser?.email) || normalizeText(req.adminUser) || 'admin'
 
       if (title.length < 3 || title.length > 120) {
@@ -2171,19 +2190,26 @@ export function createAdminApiApp({ env = process.env } = {}) {
         return
       }
 
-      if (!scope) {
-        jsonError(res, 400, 'alcance invalido. Usa "all" o "user".')
+      if (!audience) {
+        jsonError(res, 400, 'Tipo de audiencia invalido.')
+        return
+      }
+      if (audience === 'role' && !['activador', 'lider', 'facturador'].includes(targetRole)) {
+        jsonError(res, 400, 'rolObjetivo invalido.')
+        return
+      }
+      if (audience === 'users' && (!specificUserIds.length || specificUserIds.length > 500)) {
+        jsonError(res, 400, 'Selecciona entre 1 y 500 usuarios especificos.')
         return
       }
 
       let recipients = []
 
-      if (scope === 'all') {
-        const { data, error } = await adminSupabase
-          .from('activadores')
-          .select('usuario_id, nombre, email')
-          .eq('estado', 'activo')
-          .not('usuario_id', 'is', null)
+      if (audience === 'all' || audience === 'role') {
+        let recipientsQuery = adminSupabase.from('activadores')
+          .select('usuario_id, nombre, email, rol').eq('estado', 'activo').not('usuario_id', 'is', null)
+        if (audience === 'role') recipientsQuery = recipientsQuery.eq('rol', targetRole)
+        const { data, error } = await recipientsQuery
 
         if (error) {
           jsonError(res, 500, 'No se pudo obtener lista de destinatarios.', error.message)
@@ -2199,29 +2225,18 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
         recipients = [...dedupedRecipients.values()]
       } else {
-        if (!targetUserId) {
-          jsonError(res, 400, 'usuarioObjetivoId es obligatorio para alcance user.')
-          return
-        }
-
         const { data, error } = await adminSupabase
           .from('activadores')
-          .select('usuario_id, nombre, email')
-          .eq('usuario_id', targetUserId)
+          .select('usuario_id, nombre, email, rol')
+          .in('usuario_id', specificUserIds)
           .eq('estado', 'activo')
-          .maybeSingle()
 
         if (error) {
           jsonError(res, 500, 'No se pudo validar el usuario objetivo.', error.message)
           return
         }
 
-        if (!data?.usuario_id) {
-          jsonError(res, 404, 'No se encontro un usuario objetivo activo.')
-          return
-        }
-
-        recipients = [data]
+        recipients = [...new Map((data ?? []).filter((item) => item?.usuario_id).map((item) => [item.usuario_id, item])).values()]
       }
 
       if (!recipients.length) {
@@ -2233,15 +2248,30 @@ export function createAdminApiApp({ env = process.env } = {}) {
         titulo: title,
         mensaje: message,
         alcance: scope,
-        usuario_objetivo_id: scope === 'user' ? targetUserId : null,
+        usuario_objetivo_id: audience === 'users' && specificUserIds.length === 1 ? specificUserIds[0] : null,
+        tipo_audiencia: audience,
+        rol_objetivo: audience === 'role' ? targetRole : null,
+        destinatarios_total: recipients.length,
         creado_por: createdBy,
       }
 
-      const { data: insertedNotification, error: insertNotificationErr } = await adminSupabase
+      let { data: insertedNotification, error: insertNotificationErr } = await adminSupabase
         .from('notificaciones')
         .insert(notificationPayload)
-        .select('id, titulo, mensaje, alcance, usuario_objetivo_id, creado_por, created_at')
+        .select('id, titulo, mensaje, alcance, usuario_objetivo_id, tipo_audiencia, rol_objetivo, destinatarios_total, creado_por, created_at')
         .single()
+
+      if (insertNotificationErr && isMissingOrganizationSchema(insertNotificationErr)) {
+        const legacyPayload = {
+          titulo: title, mensaje: message, alcance: scope,
+          usuario_objetivo_id: audience === 'users' && specificUserIds.length === 1 ? specificUserIds[0] : null,
+          creado_por: createdBy,
+        }
+        const legacyInsert = await adminSupabase.from('notificaciones').insert(legacyPayload)
+          .select('id, titulo, mensaje, alcance, usuario_objetivo_id, creado_por, created_at').single()
+        insertedNotification = legacyInsert.data
+        insertNotificationErr = legacyInsert.error
+      }
 
       if (insertNotificationErr || !insertedNotification?.id) {
         jsonError(
@@ -2283,10 +2313,12 @@ export function createAdminApiApp({ env = process.env } = {}) {
           titulo: insertedNotification.titulo,
           mensaje: insertedNotification.mensaje,
           alcance: insertedNotification.alcance,
+          tipo_audiencia: audience,
+          rol_objetivo: audience === 'role' ? targetRole : null,
           usuarioObjetivo:
-            scope === 'user'
+            audience === 'users' && specificUserIds.length === 1
               ? {
-                  usuario_id: targetUserId,
+                  usuario_id: specificUserIds[0],
                   nombre: recipients[0]?.nombre ?? null,
                   email: recipients[0]?.email ?? null,
                 }

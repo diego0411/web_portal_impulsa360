@@ -526,8 +526,22 @@ for each row execute function public.snapshot_organizacion_activacion();
 update public.activaciones ac
 set equipo_id_registro = coalesce(ac.equipo_id_registro, a.equipo_id),
     plaza_base_id_registro = coalesce(ac.plaza_base_id_registro, e.plaza_id),
-    plaza_efectiva_id_registro = coalesce(ac.plaza_efectiva_id_registro, pt.id, e.plaza_id),
-    plaza_id_registro = coalesce(ac.plaza_id_registro, pt.id, e.plaza_id),
+    plaza_efectiva_id_registro = coalesce(
+      ac.plaza_efectiva_id_registro,
+      (select pt.id from public.plazas pt
+       where pt.nombre_normalizado = lower(unaccent(btrim(
+         coalesce(ac.plaza_temporal, ac.ciudad_activacion, a.plaza_base, a.plaza)
+       )))),
+      e.plaza_id
+    ),
+    plaza_id_registro = coalesce(
+      ac.plaza_id_registro,
+      (select pt.id from public.plazas pt
+       where pt.nombre_normalizado = lower(unaccent(btrim(
+         coalesce(ac.plaza_temporal, ac.ciudad_activacion, a.plaza_base, a.plaza)
+       )))),
+      e.plaza_id
+    ),
     equipo_numero_registro = coalesce(ac.equipo_numero_registro, e.numero),
     equipo_nombre_registro = coalesce(ac.equipo_nombre_registro, e.nombre),
     facturador_id_registro = coalesce(ac.facturador_id_registro, e.facturador_id),
@@ -541,9 +555,6 @@ from public.activadores a
 left join public.equipos e on e.id = a.equipo_id
 left join public.facturadores f on f.id = e.facturador_id
 left join public.activadores l on l.usuario_id = coalesce(a.lider_id, e.lider_actual_id)
-left join public.plazas pt on pt.nombre_normalizado = lower(unaccent(btrim(
-  coalesce(ac.plaza_temporal, ac.ciudad_activacion, a.plaza_base, a.plaza)
-)))
 where ac.usuario_id = a.usuario_id;
 
 create index if not exists idx_activaciones_equipo_fecha on public.activaciones(equipo_id_registro, fecha_activacion);

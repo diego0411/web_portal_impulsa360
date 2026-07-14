@@ -20,7 +20,8 @@ const enviando = ref(false)
 const titulo = ref('')
 const mensaje = ref('')
 const alcance = ref('all')
-const usuarioObjetivoId = ref('')
+const usuarioObjetivoIds = ref([])
+const busquedaUsuario = ref('')
 
 const filtroTexto = ref('')
 const filtroAlcance = ref('')
@@ -38,12 +39,12 @@ const usuariosOrdenados = computed(() => {
     return left.localeCompare(right, 'es', { sensitivity: 'base' })
   })
 })
+const usuariosSeleccionables = computed(() => usuariosOrdenados.value.filter((usuario) =>
+  containsNormalized(usuario.nombre, busquedaUsuario.value) || containsNormalized(usuario.email, busquedaUsuario.value)))
 
 const notificacionesFiltradas = computed(() => {
   return notificaciones.value.filter((item) => {
-    const targetLabel = item.usuarioObjetivo
-      ? `${item.usuarioObjetivo.nombre || ''} ${item.usuarioObjetivo.email || ''}`
-      : 'todos'
+    const targetLabel = `${getTargetLabel(item)} ${item.usuarioObjetivo?.nombre || ''} ${item.usuarioObjetivo?.email || ''}`
 
     const coincideTexto =
       containsNormalized(item.titulo, filtroTexto.value) ||
@@ -51,7 +52,7 @@ const notificacionesFiltradas = computed(() => {
       containsNormalized(item.creado_por, filtroTexto.value) ||
       containsNormalized(targetLabel, filtroTexto.value)
 
-    const coincideAlcance = !filtroAlcance.value || item.alcance === filtroAlcance.value
+    const coincideAlcance = !filtroAlcance.value || (item.tipo_audiencia ?? item.alcance) === filtroAlcance.value
 
     return coincideTexto && coincideAlcance
   })
@@ -65,15 +66,22 @@ function getErrorMessage(error) {
 }
 
 function getTargetLabel(item) {
-  if (item.alcance === 'all') {
-    return 'Todos'
-  }
+  const audience = item.tipo_audiencia ?? (item.alcance === 'user' ? 'users' : 'all')
+  if (audience === 'all') return 'Todos los usuarios activos'
+  if (audience === 'role') return `${etiquetaRol(item.rol_objetivo)} activos`
+  if ((item.destinatarios_total ?? 0) > 1) return `${item.destinatarios_total} usuarios específicos`
 
   if (!item.usuarioObjetivo) {
     return 'Usuario especifico'
   }
 
   return item.usuarioObjetivo.nombre || item.usuarioObjetivo.email || item.usuarioObjetivo.usuario_id
+}
+function etiquetaRol(rol) { return ({ activador: 'Activadores', lider: 'Líderes', facturador: 'Facturadores' }[rol] ?? 'Rol') }
+function getAudienceLabel(item) {
+  const audience = item.tipo_audiencia ?? (item.alcance === 'user' ? 'users' : 'all')
+  if (audience === 'role') return etiquetaRol(item.rol_objetivo)
+  return audience === 'users' ? 'Usuarios específicos' : 'Todos'
 }
 
 function getMessagePreview(text) {
@@ -99,7 +107,8 @@ function resetForm() {
   titulo.value = ''
   mensaje.value = ''
   alcance.value = 'all'
-  usuarioObjetivoId.value = ''
+  usuarioObjetivoIds.value = []
+  busquedaUsuario.value = ''
 }
 
 async function requestAdmin(path, options = {}) {
@@ -149,8 +158,8 @@ async function enviarNotificacion() {
     return
   }
 
-  if (alcance.value === 'user' && !usuarioObjetivoId.value) {
-    notifyWarning('Selecciona el usuario objetivo para el envio especifico.')
+  if (alcance.value === 'users' && !usuarioObjetivoIds.value.length) {
+    notifyWarning('Selecciona al menos un usuario para el envio especifico.')
     return
   }
 
@@ -160,8 +169,9 @@ async function enviarNotificacion() {
     const payload = {
       titulo: tituloNormalizado,
       mensaje: mensajeNormalizado,
-      alcance: alcance.value,
-      usuarioObjetivoId: alcance.value === 'user' ? usuarioObjetivoId.value : null,
+      tipoAudiencia: alcance.value === 'all' ? 'all' : alcance.value === 'users' ? 'users' : 'role',
+      rolObjetivo: ['activador', 'lider', 'facturador'].includes(alcance.value) ? alcance.value : null,
+      usuarioObjetivoIds: alcance.value === 'users' ? usuarioObjetivoIds.value : [],
     }
 
     const result = await requestAdmin('/admin/notifications', {
@@ -242,26 +252,26 @@ onMounted(async () => {
           </label>
 
           <label>
-            <span class="field-label">Alcance</span>
+            <span class="field-label">Audiencia</span>
             <select v-model="alcance" class="input-texto">
               <option value="all">Todos</option>
-              <option value="user">Usuario especifico</option>
+              <option value="activador">Activadores</option>
+              <option value="lider">Líderes</option>
+              <option value="facturador">Facturadores</option>
+              <option value="users">Usuarios específicos</option>
             </select>
           </label>
 
-          <label v-if="alcance === 'user'">
-            <span class="field-label">Usuario objetivo</span>
-            <select v-model="usuarioObjetivoId" class="input-texto">
-              <option value="">Selecciona un usuario</option>
-              <option
-                v-for="usuario in usuariosOrdenados"
-                :key="usuario.usuario_id"
-                :value="usuario.usuario_id"
-              >
-                {{ usuario.nombre || usuario.email }} · {{ usuario.email }}
-              </option>
-            </select>
-          </label>
+          <div v-if="alcance === 'users'">
+            <label><span class="field-label">Buscar usuarios activos</span><input v-model="busquedaUsuario" class="input-texto" placeholder="Nombre o correo"></label>
+            <div class="notification-user-picker">
+              <label v-for="usuario in usuariosSeleccionables" :key="usuario.usuario_id" class="scope-pill">
+                <input v-model="usuarioObjetivoIds" type="checkbox" :value="usuario.usuario_id">
+                {{ usuario.nombre || usuario.email }} · {{ etiquetaRol(usuario.rol) }}
+              </label>
+            </div>
+            <span class="field-label">{{ usuarioObjetivoIds.length }} seleccionados</span>
+          </div>
 
           <button
             type="submit"
@@ -298,7 +308,8 @@ onMounted(async () => {
           <select v-model="filtroAlcance" class="input-texto">
             <option value="">Todos</option>
             <option value="all">Todos</option>
-            <option value="user">Usuario especifico</option>
+            <option value="role">Por rol</option>
+            <option value="users">Usuarios específicos</option>
           </select>
         </label>
       </div>
@@ -335,8 +346,8 @@ onMounted(async () => {
                 </details>
               </td>
               <td>
-                <span class="scope-pill" :class="item.alcance === 'all' ? 'scope-pill-all' : 'scope-pill-user'">
-                  {{ item.alcance === 'all' ? 'Todos' : 'Usuario' }}
+                <span class="scope-pill" :class="(item.tipo_audiencia ?? item.alcance) === 'all' ? 'scope-pill-all' : 'scope-pill-user'">
+                  {{ getAudienceLabel(item) }}
                 </span>
               </td>
               <td :title="item.usuarioObjetivo?.email || ''">{{ getTargetLabel(item) }}</td>

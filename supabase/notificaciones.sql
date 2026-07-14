@@ -21,6 +21,30 @@ create table if not exists public.notificaciones_destinatarios (
   primary key (notificacion_id, usuario_id)
 );
 
+-- Metadatos de audiencia. Las columnas anteriores se conservan para clientes existentes.
+alter table public.notificaciones add column if not exists tipo_audiencia text;
+alter table public.notificaciones add column if not exists rol_objetivo text;
+alter table public.notificaciones add column if not exists destinatarios_total integer;
+
+update public.notificaciones
+set tipo_audiencia = case when alcance = 'user' then 'users' else 'all' end
+where tipo_audiencia is null;
+
+alter table public.notificaciones alter column tipo_audiencia set default 'all';
+alter table public.notificaciones alter column tipo_audiencia set not null;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'notificaciones_tipo_audiencia_valido') then
+    alter table public.notificaciones add constraint notificaciones_tipo_audiencia_valido
+      check (tipo_audiencia in ('all', 'role', 'users'));
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'notificaciones_rol_objetivo_valido') then
+    alter table public.notificaciones add constraint notificaciones_rol_objetivo_valido
+      check (rol_objetivo is null or rol_objetivo in ('activador', 'lider', 'facturador'));
+  end if;
+end;
+$$;
+
 -- Alineacion con app movil:
 -- cada fila destinatario tiene un id estable para operaciones directas (marcar leida por id).
 alter table public.notificaciones_destinatarios
