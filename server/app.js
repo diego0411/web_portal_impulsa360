@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import express from 'express'
 import { createClient } from '@supabase/supabase-js'
+import { generateActivacionesExcel } from './activacionesExcel.js'
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const ACTIVATION_EDITABLE_FIELDS = new Set([
@@ -626,6 +627,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       res.setHeader('Vary', 'Origin')
       res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS')
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+      res.setHeader('Access-Control-Expose-Headers', 'X-Export-Row-Count,X-Export-Images')
     }
 
     if (req.method === 'OPTIONS') {
@@ -719,6 +721,39 @@ export function createAdminApiApp({ env = process.env } = {}) {
     const { data, error } = await query.range(from, to)
     if (error) { jsonError(res, 500, 'No se pudo obtener activaciones.', error.message); return }
     res.json({ activations: data ?? [] })
+  }))
+  app.get('/portal/activations/export-excel', asyncRoute(async (req, res) => {
+    let allowedUserIds = null
+    if (req.portalUser.rol === 'lider') {
+      const { data: team, error: teamError } = await adminSupabase
+        .from('activadores')
+        .select('usuario_id')
+        .eq('lider_id', req.portalUser.usuario_id)
+      if (teamError) {
+        jsonError(res, 500, 'No se pudo resolver el equipo.', teamError.message)
+        return
+      }
+      allowedUserIds = (team ?? []).map((item) => item.usuario_id).filter(Boolean)
+    }
+
+    const filters = {
+      plaza: normalizeText(req.query.plaza),
+      distrito: normalizeText(req.query.distrito),
+      impulsador: normalizeText(req.query.impulsador),
+      fechaDesde: normalizeText(req.query.fechaDesde),
+      fechaHasta: normalizeText(req.query.fechaHasta),
+    }
+    const result = await generateActivacionesExcel({
+      adminSupabase,
+      bucket: activacionesBucket,
+      filters,
+      allowedUserIds,
+    })
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', 'attachment; filename="activaciones.xlsx"')
+    res.setHeader('X-Export-Row-Count', String(result.rowCount))
+    res.setHeader('X-Export-Images', 'links')
+    res.send(Buffer.from(result.buffer))
   }))
 
   app.use('/admin', requireAdminBasicAuth)

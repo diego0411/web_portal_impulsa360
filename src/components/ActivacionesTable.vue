@@ -12,7 +12,6 @@ import {
 import { isValidEmail, normalizeEmail, normalizeText } from '../lib/textUtils'
 import { useAuth } from '../lib/authStore'
 import { AUTH_ENABLED } from '../lib/featureFlags'
-import { supabase } from '../lib/supabaseClient'
 
 const props = defineProps({
   activaciones: {
@@ -26,7 +25,6 @@ const storageBaseUrl = String(import.meta.env.VITE_SUPABASE_URL ?? '').replace(/
 const storageBucket =
   import.meta.env.VITE_STORAGE_BUCKET_ACTIVACIONES ?? 'fotos-activaciones'
 const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(/\/$/, '')
-let excelJsModulePromise = null
 const boliviaDateTimeFormatter = new Intl.DateTimeFormat('es-BO', {
   dateStyle: 'short',
   timeStyle: 'medium',
@@ -137,34 +135,6 @@ function getFotoPublicUrl(fotoUrl) {
   return `${storageBaseUrl}/storage/v1/object/public/${storageBucket}/${objectPath}`
 }
 
-function getFotoObjectPath(fotoUrl) {
-  if (!fotoUrl) return ''
-
-  let path = String(fotoUrl)
-  if (/^https?:\/\//i.test(path)) {
-    try {
-      path = new URL(path).pathname
-    } catch {
-      return ''
-    }
-  }
-
-  path = path.split('?')[0].split('#')[0].replace(/^\/+/, '')
-  const storagePrefix = 'storage/v1/object/'
-  if (path.startsWith(storagePrefix)) {
-    path = path.slice(storagePrefix.length).replace(/^(?:public|sign)\//, '')
-  }
-
-  if (path.startsWith(`${storageBucket}/`)) {
-    path = path.slice(storageBucket.length + 1)
-  }
-
-  try {
-    return decodeURIComponent(path)
-  } catch {
-    return path
-  }
-}
 
 function getRowKey(activacion, index) {
   return (
@@ -446,14 +416,6 @@ async function eliminarActivacion(activacion) {
   }
 }
 
-async function loadExcelJs() {
-  if (!excelJsModulePromise) {
-    excelJsModulePromise = import('exceljs')
-  }
-
-  return excelJsModulePromise
-}
-
 function descargarArchivo({ filename, content, mimeType }) {
   const blob = new Blob([content], { type: mimeType })
   const objectUrl = URL.createObjectURL(blob)
@@ -545,199 +507,46 @@ function exportarACsv() {
   notifySuccess('CSV exportado correctamente.')
 }
 
-function getImageExtension(contentType) {
-  if (!contentType) return null
-  const lower = contentType.toLowerCase()
-
-  if (lower.includes('png')) return 'png'
-  if (lower.includes('jpeg') || lower.includes('jpg')) return 'jpeg'
-
-  return null
-}
-
-async function getFotoBlob(fotoUrl) {
-  const objectPath = getFotoObjectPath(fotoUrl)
-  if (objectPath) {
-    const { data, error } = await supabase.storage.from(storageBucket).download(objectPath)
-    if (!error && data) return data
-  }
-
-  const response = await fetch(getFotoPublicUrl(fotoUrl))
-  if (!response.ok) throw new Error(`No se pudo descargar la imagen (${response.status}).`)
-  return response.blob()
-}
-
 async function exportarAExcelConImagenes() {
-  const datos = getDatosParaExportar()
-
-  if (!datos.length) {
-    notifyInfo('No hay datos para exportar con los filtros actuales.')
-    return
-  }
-
   exportandoExcel.value = true
-
   try {
-    const { default: ExcelJS } = await loadExcelJs()
-    const workbook = new ExcelJS.Workbook()
-    const worksheet = workbook.addWorksheet('Activaciones', {
-      views: [{ state: 'frozen', ySplit: 1 }],
+    const params = new URLSearchParams()
+    if (filtroPlaza.value) params.set('plaza', filtroPlaza.value)
+    if (filtroDistrito.value) params.set('distrito', filtroDistrito.value)
+    if (filtroImpulsador.value) params.set('impulsador', filtroImpulsador.value)
+    if (filtroFechaDesde.value) params.set('fechaDesde', filtroFechaDesde.value)
+    if (filtroFechaHasta.value) params.set('fechaHasta', filtroFechaHasta.value)
+
+    const token = session.value?.access_token
+    if (!token) throw new Error('Sesion requerida para generar el Excel.')
+    const response = await fetch(`${apiBaseUrl}/portal/activations/export-excel?${params}`, {
+      headers: { Authorization: `Bearer ${token}` },
     })
-
-    worksheet.columns = [
-      { header: '#', key: 'numero', width: 7 },
-      { header: 'Creado', key: 'creado', width: 26 },
-      { header: 'Fecha', key: 'fecha', width: 14 },
-      { header: 'Impulsador', key: 'impulsador', width: 24 },
-      { header: 'Plaza', key: 'plaza', width: 18 },
-      { header: 'Distrito', key: 'distrito', width: 20 },
-      { header: 'Nombres Cliente', key: 'nombres', width: 24 },
-      { header: 'Apellidos Cliente', key: 'apellidos', width: 24 },
-      { header: 'CI Cliente', key: 'ci', width: 14 },
-      { header: 'Telefono Cliente', key: 'telefono', width: 16 },
-      { header: 'Email Cliente', key: 'email', width: 28 },
-      { header: 'Descargo App', key: 'descargo', width: 14 },
-      { header: 'Registro', key: 'registro', width: 12 },
-      { header: 'Cash In', key: 'cashIn', width: 10 },
-      { header: 'Cash Out', key: 'cashOut', width: 10 },
-      { header: 'P2P', key: 'p2p', width: 10 },
-      { header: 'QR Fisico', key: 'qrFisico', width: 12 },
-      { header: 'Respaldo', key: 'respaldo', width: 11 },
-      { header: 'Hubo Error', key: 'huboError', width: 12 },
-      { header: 'Descripcion Error', key: 'descripcionError', width: 30 },
-      { header: 'Tipo Activacion', key: 'tipoActivacion', width: 20 },
-      { header: 'Tipo Comercio', key: 'tipoComercio', width: 20 },
-      { header: 'Tamano Tienda', key: 'tamanoTienda', width: 18 },
-      { header: 'Tipo Tienda', key: 'tipoTienda', width: 18 },
-      { header: 'Rubro Comercio', key: 'rubroComercio', width: 20 },
-      { header: 'Otro Rubro', key: 'rubroComercioOtro', width: 20 },
-      { header: 'Fuera de Mercado', key: 'fueraMercado', width: 18 },
-      { header: 'Tipo Error', key: 'tipoError', width: 20 },
-      { header: 'Observaciones', key: 'observaciones', width: 30 },
-      { header: 'Es Plaza Temporal', key: 'esPlazaTemporal', width: 18 },
-      { header: 'Plaza Temporal', key: 'plazaTemporal', width: 20 },
-      { header: 'Foto', key: 'foto', width: 16 },
-      { header: 'Foto Cash-In', key: 'fotoCashIn', width: 16 },
-      { header: 'Latitud', key: 'latitud', width: 14 },
-      { header: 'Longitud', key: 'longitud', width: 14 },
-      { header: 'Usuario ID', key: 'usuarioId', width: 38 },
-    ]
-
-    const headerRow = worksheet.getRow(1)
-    headerRow.eachCell((cell) => {
-      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
-      cell.fill = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'FF101E2E' },
-      }
-      cell.alignment = { vertical: 'middle', horizontal: 'left' }
-      cell.border = {
-        top: { style: 'thin', color: { argb: 'FF1E3B58' } },
-        left: { style: 'thin', color: { argb: 'FF1E3B58' } },
-        bottom: { style: 'thin', color: { argb: 'FF1E3B58' } },
-        right: { style: 'thin', color: { argb: 'FF1E3B58' } },
-      }
-    })
-
-    for (const [index, row] of datos.entries()) {
-      worksheet.addRow({
-        numero: index + 1,
-        creado: formatCreatedAtBolivia(row.created_at, { emptyValue: '' }),
-        fecha: row.fecha_activacion,
-        impulsador: row.impulsador,
-        plaza: getCiudadActivacion(row),
-        distrito: row.zona_activacion,
-        nombres: row.nombres_cliente,
-        apellidos: row.apellidos_cliente,
-        ci: row.ci_cliente,
-        telefono: row.telefono_cliente,
-        email: row.email_cliente,
-        descargo: row.descargo_app ? 'Si' : 'No',
-        registro: row.registro ? 'Si' : 'No',
-        cashIn: row.cash_in ? 'Si' : 'No',
-        cashOut: row.cash_out ? 'Si' : 'No',
-        p2p: row.p2p ? 'Si' : 'No',
-        qrFisico: row.qr_fisico ? 'Si' : 'No',
-        respaldo: row.respaldo ? 'Si' : 'No',
-        huboError: row.hubo_error ? 'Si' : 'No',
-        descripcionError: row.descripcion_error,
-        tipoActivacion: row.tipo_activacion,
-        tipoComercio: row.tipo_comercio,
-        tamanoTienda: row.tamano_tienda,
-        tipoTienda: row.tipo_tienda,
-        rubroComercio: row.rubro_comercio,
-        rubroComercioOtro: row.rubro_comercio_otro,
-        fueraMercado: row.comercio_fuera_mercado == null ? '' : row.comercio_fuera_mercado ? 'Si' : 'No',
-        tipoError: row.tipo_error,
-        observaciones: row.observaciones,
-        esPlazaTemporal: row.es_plaza_temporal == null ? '' : row.es_plaza_temporal ? 'Si' : 'No',
-        plazaTemporal: row.plaza_temporal,
-        foto: row.foto_url ? 'Imagen adjunta' : '',
-        fotoCashIn: row.foto_cash_in ? 'Imagen adjunta' : '',
-        latitud: row.latitud,
-        longitud: row.longitud,
-        usuarioId: row.usuario_id,
-      })
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null)
+      throw new Error(payload?.error || `Error HTTP ${response.status}`)
     }
 
-    const imageColumns = [
-      { key: 'foto', field: 'foto_url' },
-      { key: 'fotoCashIn', field: 'foto_cash_in' },
-    ]
-    for (const [index, row] of datos.entries()) {
-      const rowNumber = index + 2
-      for (const imageColumn of imageColumns) {
-        if (!row[imageColumn.field]) continue
-        const fotoColumnIndex = worksheet.getColumn(imageColumn.key).number
-        const fotoUrl = getFotoPublicUrl(row[imageColumn.field])
-        try {
-          const imageBlob = await getFotoBlob(row[imageColumn.field])
-          const extension = getImageExtension(imageBlob.type)
-          if (!extension) {
-            worksheet.getCell(rowNumber, fotoColumnIndex).value = fotoUrl
-            continue
-          }
-
-          const imageBuffer = await imageBlob.arrayBuffer()
-          const imageId = workbook.addImage({
-            buffer: imageBuffer,
-            extension,
-          })
-
-          const excelRow = worksheet.getRow(rowNumber)
-          if (!excelRow.height || excelRow.height < 52) {
-            excelRow.height = 52
-          }
-
-          worksheet.addImage(imageId, {
-            tl: { col: fotoColumnIndex - 1 + 0.1, row: rowNumber - 1 + 0.1 },
-            ext: { width: 88, height: 56 },
-            editAs: 'oneCell',
-          })
-
-          worksheet.getCell(rowNumber, fotoColumnIndex).value = ''
-        } catch {
-          worksheet.getCell(rowNumber, fotoColumnIndex).value = fotoUrl
-        }
-      }
-    }
-
-    const workbookBuffer = await workbook.xlsx.writeBuffer()
+    const rowCount = Number(response.headers.get('X-Export-Row-Count')) || 0
+    const imageMode = response.headers.get('X-Export-Images')
     descargarArchivo({
-      filename: 'activaciones_con_imagenes.xlsx',
-      content: workbookBuffer,
-      mimeType:
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      filename: 'activaciones.xlsx',
+      content: await response.arrayBuffer(),
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     })
-    notifySuccess('Excel con imagenes exportado correctamente.')
+    notifySuccess(
+      imageMode === 'links'
+        ? `Excel exportado con ${rowCount} registros y enlaces a imagenes.`
+        : `Excel exportado con ${rowCount} registros e imagenes.`
+    )
   } catch (error) {
     console.error('Error al exportar excel:', error)
-    notifyError('No se pudo generar el archivo Excel.')
+    notifyError(getErrorMessage(error))
   } finally {
     exportandoExcel.value = false
   }
 }
+
 </script>
 
 <template>
@@ -803,7 +612,7 @@ async function exportarAExcelConImagenes() {
           class="boton-exportar boton-exportar-excel"
           :disabled="exportandoExcel || deletingActivationId"
         >
-          {{ exportandoExcel ? 'Generando Excel...' : 'Exportar Excel + Imagenes' }}
+          {{ exportandoExcel ? 'Generando Excel en servidor...' : 'Exportar Excel + Imagenes' }}
         </button>
       </div>
       <span class="meta-pill">{{ activacionesFiltradas.length }} visibles</span>
