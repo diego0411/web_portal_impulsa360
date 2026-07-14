@@ -70,6 +70,10 @@ function isValidEmail(value) {
   return EMAIL_REGEX.test(normalizeEmail(value))
 }
 
+function isStrongPassword(value) {
+  return typeof value === 'string' && value.length >= 10 && /[A-Z]/.test(value) && /[a-z]/.test(value) && /[0-9]/.test(value) && /[^A-Za-z0-9]/.test(value)
+}
+
 export function resolvePort(rawValue) {
   const parsedPort = Number(rawValue ?? 8787)
   if (!Number.isInteger(parsedPort) || parsedPort <= 0) {
@@ -656,6 +660,10 @@ export function createAdminApiApp({ env = process.env } = {}) {
     if (!parsed) {
       const profile = await resolvePortalUser(req)
       if (profile?.rol === 'administrador') { req.portalUser = profile; next(); return }
+      if (typeof req.headers.authorization === 'string' && req.headers.authorization.startsWith('Bearer ')) {
+        jsonError(res, 403, 'Se requiere un administrador activo.')
+        return
+      }
       res.setHeader('WWW-Authenticate', 'Basic realm="admin-api"')
       jsonError(res, 401, 'Credenciales requeridas.')
       return
@@ -670,17 +678,6 @@ export function createAdminApiApp({ env = process.env } = {}) {
     }
 
     req.adminUser = parsed.username
-    next()
-  }
-
-  function requireStrictAdminBasicAuth(req, res, next) {
-    const parsed = parseBasicAuth(req.headers.authorization)
-    const valid = parsed && timingSafeEqualText(parsed.username, env.ADMIN_BASIC_USER) && timingSafeEqualText(parsed.password, env.ADMIN_BASIC_PASS)
-    if (!valid) {
-      res.setHeader('WWW-Authenticate', 'Basic realm="admin-api"')
-      jsonError(res, 401, 'Credenciales administrativas invalidas.')
-      return
-    }
     next()
   }
 
@@ -763,8 +760,8 @@ export function createAdminApiApp({ env = process.env } = {}) {
         return
       }
 
-      if (password.length < 6) {
-        jsonError(res, 400, 'La contrasena debe tener al menos 6 caracteres.')
+      if (!isStrongPassword(password)) {
+        jsonError(res, 400, 'La contrasena debe tener al menos 10 caracteres, mayuscula, minuscula, numero y simbolo.')
         return
       }
 
@@ -830,7 +827,6 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
   app.post(
     '/admin/users/:userId/reset-password',
-    requireStrictAdminBasicAuth,
     asyncRoute(async (req, res) => {
       const userId = normalizeText(req.params?.userId)
       const password = typeof req.body?.password === 'string' ? req.body.password : ''
@@ -839,7 +835,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
         jsonError(res, 400, 'Parametro userId requerido.')
         return
       }
-      if (password.length < 10 || !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password) || !/[^A-Za-z0-9]/.test(password)) {
+      if (!isStrongPassword(password)) {
         jsonError(res, 400, 'La contrasena debe tener al menos 10 caracteres, mayuscula, minuscula, numero y simbolo.')
         return
       }
@@ -895,8 +891,8 @@ export function createAdminApiApp({ env = process.env } = {}) {
         return
       }
 
-      if (password && password.length < 6) {
-        jsonError(res, 400, 'La nueva contrasena debe tener al menos 6 caracteres.')
+      if (password && !isStrongPassword(password)) {
+        jsonError(res, 400, 'La contrasena debe tener al menos 10 caracteres, mayuscula, minuscula, numero y simbolo.')
         return
       }
 

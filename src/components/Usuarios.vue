@@ -1,17 +1,14 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { adminApiRequest } from '../lib/adminApiClient'
-import { useAdminApiAuth } from '../lib/adminAuthStore'
+import { useAuth } from '../lib/authStore'
 import { notifyError, notifySuccess, notifyWarning, requestConfirmation } from '../lib/feedback'
 import { containsNormalized, isValidEmail, normalizeEmail } from '../lib/textUtils'
 
 const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(/\/$/, '')
 const roles = ['activador', 'lider', 'administrador']
 const estados = ['activo', 'inhabilitado']
-const { username: apiUser, password: apiPass, hasCredentials: puedeConectar, setCredentials } = useAdminApiAuth()
-const conectado = ref(false)
-const conectando = ref(false)
-const authErrorMsg = ref(null)
+const { session, isAdmin } = useAuth()
 const usuarios = ref([])
 const loading = ref(false)
 const procesando = ref(false)
@@ -39,27 +36,14 @@ const usuariosFiltrados = computed(() => usuarios.value.filter((u) => {
 }))
 
 function requestAdmin(path, options = {}) {
-  return adminApiRequest({ baseUrl: apiBaseUrl, path, username: apiUser.value, password: apiPass.value, ...options })
+  return adminApiRequest({ baseUrl: apiBaseUrl, path, token: session.value?.access_token, ...options })
 }
 function getErrorMessage(error) { return error instanceof Error && error.message ? error.message : 'Se produjo un error inesperado.' }
 function etiqueta(valor) { return valor ? valor.charAt(0).toUpperCase() + valor.slice(1) : 'Sin asignar' }
 function nombreLider(usuario) { return usuario.lider_id ? (usuariosPorId.value[usuario.lider_id]?.nombre ?? 'Lider no disponible') : 'Sin asignar' }
 
-async function conectarApi() {
-  if (!puedeConectar.value) { notifyWarning('Ingresa usuario y password de API.'); return }
-  conectando.value = true
-  authErrorMsg.value = null
-  try {
-    await requestAdmin('/admin/healthz')
-    setCredentials(apiUser.value, apiPass.value)
-    conectado.value = true
-    await cargarUsuarios()
-    notifySuccess('Conexion con API admin establecida.')
-  } catch (error) { conectado.value = false; authErrorMsg.value = getErrorMessage(error); notifyError(authErrorMsg.value) }
-  finally { conectando.value = false }
-}
 async function cargarUsuarios() {
-  if (!conectado.value) return
+  if (!isAdmin.value) { errorMsg.value = 'Esta seccion requiere una sesion de administrador activo.'; return }
   loading.value = true; errorMsg.value = null
   try { const result = await requestAdmin('/admin/users'); usuarios.value = result.users ?? [] }
   catch (error) { errorMsg.value = getErrorMessage(error); notifyError(errorMsg.value) }
@@ -68,7 +52,7 @@ async function cargarUsuarios() {
 function validarFormulario(form, esEdicion = false) {
   if (!form.nombre?.trim() || !normalizeEmail(form.email) || (!esEdicion && !form.password)) return 'Completa todos los campos obligatorios.'
   if (!isValidEmail(normalizeEmail(form.email))) return 'Ingresa un correo valido.'
-  if (form.password && form.password.length < 6) return 'La contrasena debe tener al menos 6 caracteres.'
+  if (form.password && !/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{10,}$/.test(form.password)) return 'La contrasena debe tener al menos 10 caracteres, mayuscula, minuscula, numero y simbolo.'
   if (form.estado === 'inhabilitado' && !form.motivo_inhabilitacion?.trim()) return 'Ingresa el motivo de inhabilitacion.'
   return null
 }
@@ -130,6 +114,8 @@ async function activarUsuario(usuario) {
   } catch (error) { notifyError(getErrorMessage(error)) }
   finally { procesando.value = false }
 }
+
+onMounted(cargarUsuarios)
 </script>
 
 <template>
@@ -137,18 +123,10 @@ async function activarUsuario(usuario) {
     <header class="view-header">
       <p class="view-kicker">Control de Accesos</p><h1 class="view-title">Gestion de Usuarios</h1>
       <p class="view-description">Administra el equipo operativo conectado a la base principal de activaciones.</p>
-      <div class="meta-row"><span class="meta-pill" :class="{ 'meta-pill-ok': conectado }">{{ conectado ? 'API conectada' : 'API desconectada' }}</span></div>
+      <div class="meta-row"><span class="meta-pill meta-pill-ok">Sesion administrativa</span></div>
     </header>
     <div class="forms-grid">
       <div class="formulario-registro">
-        <h2 class="subtitulo">Conexion API Admin</h2>
-        <form class="formulario-campos" @submit.prevent="conectarApi">
-          <input v-model="apiUser" placeholder="Usuario API" class="input-texto"><input v-model="apiPass" type="password" placeholder="Password API" class="input-texto">
-          <button type="submit" class="boton boton-primario" :disabled="conectando || !puedeConectar">{{ conectando ? 'Conectando...' : 'Conectar' }}</button>
-          <p v-if="authErrorMsg" class="mensaje-error">{{ authErrorMsg }}</p><p v-else-if="conectado">Conectado a {{ apiBaseUrl }}</p>
-        </form>
-      </div>
-      <div v-if="conectado" class="formulario-registro">
         <h2 class="subtitulo">Registrar Usuario</h2>
         <form class="formulario-campos" @submit.prevent="registrarUsuario">
           <input v-model="nuevo.email" type="email" placeholder="Correo electronico" class="input-texto"><input v-model="nuevo.password" type="password" placeholder="Contrasena" class="input-texto">
@@ -161,7 +139,7 @@ async function activarUsuario(usuario) {
         </form>
       </div>
     </div>
-    <div v-if="conectado" class="panel-card tabla-contenedor">
+    <div class="panel-card tabla-contenedor">
       <div class="toolbar-line"><h2 class="subtitulo subtitulo-inline">Usuarios Registrados</h2><div class="toolbar-actions"><span class="meta-pill">{{ usuariosFiltrados.length }} visibles</span><button class="boton" :disabled="loading || procesando" @click="cargarUsuarios">Recargar</button></div></div>
       <div class="filtros filtros-grid filtros-usuarios">
         <label><span class="field-label">Nombre o correo</span><input v-model="busqueda" class="input-texto" placeholder="Buscar usuario"></label>
@@ -177,7 +155,7 @@ async function activarUsuario(usuario) {
             <td><select v-model="edicion.rol" class="input-editar"><option v-for="rol in roles" :key="rol" :value="rol">{{ etiqueta(rol) }}</option></select></td>
             <td><select v-model="edicion.estado" class="input-editar"><option v-for="estado in estados" :key="estado" :value="estado">{{ etiqueta(estado) }}</option></select><textarea v-if="edicion.estado === 'inhabilitado'" v-model="edicion.motivo_inhabilitacion" class="input-editar" placeholder="Motivo obligatorio"></textarea></td>
             <td><select v-if="edicion.rol === 'activador'" v-model="edicion.lider_id" class="input-editar"><option value="">Sin lider</option><option v-for="lider in lideresActivos" :key="lider.usuario_id" :value="lider.usuario_id">{{ lider.nombre }}</option></select><span v-else>Sin asignar</span></td>
-            <td><input v-model="edicion.password" type="password" class="input-editar" placeholder="Opcional (min. 6)"></td><td><div class="acciones"><button class="boton boton-guardar" :disabled="procesando" @click="guardarEdicion">Guardar</button><button class="boton boton-cancelar" :disabled="procesando" @click="cancelarEdicion">Cancelar</button></div></td>
+            <td><input v-model="edicion.password" type="password" class="input-editar" placeholder="Opcional (contraseña fuerte)"></td><td><div class="acciones"><button class="boton boton-guardar" :disabled="procesando" @click="guardarEdicion">Guardar</button><button class="boton boton-cancelar" :disabled="procesando" @click="cancelarEdicion">Cancelar</button></div></td>
           </template>
           <template v-else>
             <td>{{ usuario.nombre || 'Sin nombre' }}</td><td>{{ usuario.email || 'Sin correo' }}</td><td>{{ usuario.plaza || 'Sin plaza' }}</td><td>{{ etiqueta(usuario.rol ?? 'activador') }}</td>

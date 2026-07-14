@@ -49,6 +49,7 @@ export async function adminApiRequest({
   path,
   username,
   password,
+  token,
   method = 'GET',
   body,
   headers = {},
@@ -57,13 +58,14 @@ export async function adminApiRequest({
   const safeUsername = typeof username === 'string' ? username.trim() : ''
   const safePassword = typeof password === 'string' ? password : ''
 
-  if (!safeUsername || !safePassword) {
-    throw new Error('Ingresa usuario y password de API.')
+  const safeToken = typeof token === 'string' ? token.trim() : ''
+  if (!safeToken && (!safeUsername || !safePassword)) {
+    throw new Error('Sesion administrativa requerida.')
   }
 
   const normalizedBaseUrl = String(baseUrl || '').replace(/\/$/, '')
   const requestHeaders = {
-    Authorization: `Basic ${toBase64(`${safeUsername}:${safePassword}`)}`,
+    Authorization: safeToken ? `Bearer ${safeToken}` : `Basic ${toBase64(`${safeUsername}:${safePassword}`)}`,
     ...headers,
   }
 
