@@ -12,6 +12,7 @@ import {
 import { isValidEmail, normalizeEmail, normalizeText } from '../lib/textUtils'
 import { useAuth } from '../lib/authStore'
 import { AUTH_ENABLED } from '../lib/featureFlags'
+import { supabase } from '../lib/supabaseClient'
 
 const props = defineProps({
   activaciones: {
@@ -45,8 +46,11 @@ const guardandoEdicion = ref(false)
 const formularioEdicion = ref({})
 const motivoEdicion = ref('')
 const { username: apiUser, password: apiPass, hasCredentials } = useAdminApiAuth()
-const { isAdmin } = useAuth()
+const { session, isAdmin } = useAuth()
 const canAdminister = computed(() => !AUTH_ENABLED || isAdmin.value)
+const canEditActivaciones = computed(() =>
+  AUTH_ENABLED ? Boolean(session.value?.access_token && isAdmin.value) : hasCredentials.value
+)
 
 function getCiudadActivacion(activacion) {
   return (
@@ -99,7 +103,7 @@ function csvEscape(value) {
 
   const normalized = String(value).replace(/"/g, '""')
 
-  if (/[",\n]/.test(normalized)) {
+  if (/[";\r\n]/.test(normalized)) {
     return `"${normalized}"`
   }
 
@@ -131,6 +135,35 @@ function getFotoPublicUrl(fotoUrl) {
     : cleanPath
 
   return `${storageBaseUrl}/storage/v1/object/public/${storageBucket}/${objectPath}`
+}
+
+function getFotoObjectPath(fotoUrl) {
+  if (!fotoUrl) return ''
+
+  let path = String(fotoUrl)
+  if (/^https?:\/\//i.test(path)) {
+    try {
+      path = new URL(path).pathname
+    } catch {
+      return ''
+    }
+  }
+
+  path = path.split('?')[0].split('#')[0].replace(/^\/+/, '')
+  const storagePrefix = 'storage/v1/object/'
+  if (path.startsWith(storagePrefix)) {
+    path = path.slice(storagePrefix.length).replace(/^(?:public|sign)\//, '')
+  }
+
+  if (path.startsWith(`${storageBucket}/`)) {
+    path = path.slice(storageBucket.length + 1)
+  }
+
+  try {
+    return decodeURIComponent(path)
+  } catch {
+    return path
+  }
 }
 
 function getRowKey(activacion, index) {
@@ -332,7 +365,7 @@ async function guardarEdicion() {
   const validationError = validarEdicion()
   if (validationError) { notifyWarning(validationError); return }
   const activationId = normalizeText(activacionSeleccionada.value?.id)
-  if (!activationId || !hasCredentials.value) {
+  if (!activationId || !canEditActivaciones.value) {
     notifyWarning(!activationId ? 'La activacion no tiene ID.' : 'Conecta la API admin para editar activaciones.')
     return
   }
@@ -358,6 +391,7 @@ async function requestAdmin(path, options = {}) {
     path,
     username: apiUser.value,
     password: apiPass.value,
+    token: session.value?.access_token,
     ...options,
   })
 }
@@ -431,7 +465,7 @@ function descargarArchivo({ filename, content, mimeType }) {
   link.click()
   document.body.removeChild(link)
 
-  URL.revokeObjectURL(objectUrl)
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
 }
 
 function getDatosParaExportar() {
@@ -493,18 +527,18 @@ function exportarACsv() {
   }
 
   const csvLines = []
-  csvLines.push(columnasExportacion.map(([header]) => csvEscape(header)).join(','))
+  csvLines.push(columnasExportacion.map(([header]) => csvEscape(header)).join(';'))
 
   for (const [index, row] of datos.entries()) {
     const values = columnasExportacion.map(([, getValue]) =>
       csvEscape(getValue(row, index))
     )
-    csvLines.push(values.join(','))
+    csvLines.push(values.join(';'))
   }
 
   descargarArchivo({
     filename: 'activaciones.csv',
-    content: `\uFEFF${csvLines.join('\n')}`,
+    content: `\uFEFF${csvLines.join('\r\n')}`,
     mimeType: 'text/csv;charset=utf-8;',
   })
 
@@ -519,6 +553,18 @@ function getImageExtension(contentType) {
   if (lower.includes('jpeg') || lower.includes('jpg')) return 'jpeg'
 
   return null
+}
+
+async function getFotoBlob(fotoUrl) {
+  const objectPath = getFotoObjectPath(fotoUrl)
+  if (objectPath) {
+    const { data, error } = await supabase.storage.from(storageBucket).download(objectPath)
+    if (!error && data) return data
+  }
+
+  const response = await fetch(getFotoPublicUrl(fotoUrl))
+  if (!response.ok) throw new Error(`No se pudo descargar la imagen (${response.status}).`)
+  return response.blob()
 }
 
 async function exportarAExcelConImagenes() {
@@ -646,36 +692,31 @@ async function exportarAExcelConImagenes() {
         const fotoColumnIndex = worksheet.getColumn(imageColumn.key).number
         const fotoUrl = getFotoPublicUrl(row[imageColumn.field])
         try {
-        const response = await fetch(fotoUrl)
-        if (!response.ok) {
-          worksheet.getCell(rowNumber, fotoColumnIndex).value = fotoUrl
-          continue
-        }
+          const imageBlob = await getFotoBlob(row[imageColumn.field])
+          const extension = getImageExtension(imageBlob.type)
+          if (!extension) {
+            worksheet.getCell(rowNumber, fotoColumnIndex).value = fotoUrl
+            continue
+          }
 
-        const extension = getImageExtension(response.headers.get('content-type'))
-        if (!extension) {
-          worksheet.getCell(rowNumber, fotoColumnIndex).value = fotoUrl
-          continue
-        }
+          const imageBuffer = await imageBlob.arrayBuffer()
+          const imageId = workbook.addImage({
+            buffer: imageBuffer,
+            extension,
+          })
 
-        const imageBuffer = await response.arrayBuffer()
-        const imageId = workbook.addImage({
-          buffer: imageBuffer,
-          extension,
-        })
+          const excelRow = worksheet.getRow(rowNumber)
+          if (!excelRow.height || excelRow.height < 52) {
+            excelRow.height = 52
+          }
 
-        const excelRow = worksheet.getRow(rowNumber)
-        if (!excelRow.height || excelRow.height < 52) {
-          excelRow.height = 52
-        }
+          worksheet.addImage(imageId, {
+            tl: { col: fotoColumnIndex - 1 + 0.1, row: rowNumber - 1 + 0.1 },
+            ext: { width: 88, height: 56 },
+            editAs: 'oneCell',
+          })
 
-        worksheet.addImage(imageId, {
-          tl: { col: fotoColumnIndex - 1 + 0.1, row: rowNumber - 1 + 0.1 },
-          ext: { width: 88, height: 56 },
-          editAs: 'oneCell',
-        })
-
-        worksheet.getCell(rowNumber, fotoColumnIndex).value = ''
+          worksheet.getCell(rowNumber, fotoColumnIndex).value = ''
         } catch {
           worksheet.getCell(rowNumber, fotoColumnIndex).value = fotoUrl
         }
@@ -755,8 +796,9 @@ async function exportarAExcelConImagenes() {
 
     <div class="toolbar-line">
       <div class="toolbar-actions">
-        <button @click="exportarACsv" class="boton-exportar" :disabled="exportandoExcel || deletingActivationId">Exportar CSV</button>
+        <button type="button" @click="exportarACsv" class="boton-exportar" :disabled="exportandoExcel || deletingActivationId">Exportar CSV</button>
         <button
+          type="button"
           @click="exportarAExcelConImagenes"
           class="boton-exportar boton-exportar-excel"
           :disabled="exportandoExcel || deletingActivationId"
@@ -808,7 +850,7 @@ async function exportarAExcelConImagenes() {
         <aside class="detalle-activacion" role="dialog" aria-modal="true" aria-label="Detalle de activacion">
           <header class="detalle-header">
             <div><p class="view-kicker">Registro de activacion</p><h3 class="detalle-title">{{ getClienteComercio(activacionSeleccionada) }}</h3></div>
-            <button v-if="canAdminister && !editandoActivacion" type="button" class="boton boton-editar" :disabled="!hasCredentials || !activacionSeleccionada.id" @click="iniciarEdicion">Editar</button>
+            <button v-if="canAdminister && !editandoActivacion" type="button" class="boton boton-editar" :disabled="!canEditActivaciones || !activacionSeleccionada.id" @click="iniciarEdicion">Editar</button>
             <button type="button" class="detalle-close" aria-label="Cerrar detalle" @click="cerrarDetalle">×</button>
           </header>
           <form v-if="editandoActivacion" class="detalle-body" @submit.prevent="guardarEdicion">
