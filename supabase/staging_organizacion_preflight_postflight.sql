@@ -13,7 +13,8 @@ order by extname;
 -- create extension if not exists unaccent;
 
 -- ============================================================================
--- PREFLIGHT 1: activadores sin plaza resoluble. Resultado esperado: 0 filas.
+-- PREFLIGHT 1: activadores sin plaza resoluble. Resultado informativo:
+-- estas filas quedaran con organizacion_pendiente = true, sin plaza_id/equipo_id.
 -- Antes de la migracion, plaza es la fuente compatible disponible.
 -- ============================================================================
 select usuario_id, nombre, email, rol, estado, plaza
@@ -50,7 +51,7 @@ having count(*) > 1 or count(distinct btrim(a.plaza)) > 1
 order by l.nombre nulls last, plaza_normalizada;
 
 -- Lideres referenciados por activadores que no existen como lider activo.
--- Resultado esperado: 0 filas. Estos casos dejarian al activador sin equipo.
+-- Resultado informativo: estos casos quedaran pendientes, sin equipo automatico.
 select
   a.usuario_id as activador_id,
   a.nombre as activador,
@@ -92,10 +93,10 @@ select
   to_regclass('public.plazas') as plazas;
 
 -- ============================================================================
--- PREFLIGHT 4: activadores que quedarian sin equipo durante el backfill.
+-- PREFLIGHT 4: activadores que quedaran pendientes durante el backfill.
 -- La migracion crea equipo por lider/plaza cuando el lider existe con rol lider,
 -- o un equipo "sin asignar" por plaza cuando lider_id es null.
--- Resultado esperado: 0 filas.
+-- El resultado se conserva para seguimiento y ya no aborta la migracion.
 -- ============================================================================
 select
   a.usuario_id,
@@ -162,8 +163,8 @@ from public.equipos e
 where e.plaza_id is null;
 
 -- ============================================================================
--- POSTFLIGHT 2: todos los activadores tienen equipo actual y periodo vigente.
--- Resultado esperado: 0 filas.
+-- POSTFLIGHT 2: todo activador NO pendiente tiene equipo y periodo vigente.
+-- Los pendientes se revisan en la consulta de seguimiento. Esperado: 0 filas.
 -- ============================================================================
 select
   a.usuario_id,
@@ -176,6 +177,7 @@ left join public.equipos e on e.id = a.equipo_id
 left join public.activador_equipo_historial h
   on h.activador_id = a.usuario_id and h.fin is null
 where a.rol = 'activador'
+  and not a.organizacion_pendiente
 group by a.usuario_id, a.nombre, a.equipo_id, e.numero
 having a.equipo_id is null or e.id is null
    or count(h.id) filter (where h.fin is null) <> 1
@@ -232,7 +234,8 @@ join public.equipo_lider_historial h2
 order by h1.lider_id, h1.plaza_id, h1.inicio;
 
 -- ============================================================================
--- POSTFLIGHT 5: snapshots incompletos. Resultado esperado: 0 filas.
+-- POSTFLIGHT 5: snapshots incompletos. Activaciones de usuarios pendientes pueden
+-- aparecer legitimamente; priorizar filas cuyo activador no este pendiente.
 -- Se listan por separado para distinguir una organizacion faltante de textos
 -- historicos que genuinamente no existian en el dato original.
 -- ============================================================================
@@ -247,12 +250,13 @@ select
   ac.plaza_efectiva_id_registro,
   ac.plaza_id_registro
 from public.activaciones ac
+left join public.activadores au on au.usuario_id = ac.usuario_id
 where ac.equipo_id_registro is null
    or ac.facturador_id_registro is null
    or ac.plaza_base_id_registro is null
    or ac.plaza_efectiva_id_registro is null
    or ac.plaza_id_registro is null
-order by ac.created_at, ac.id;
+order by coalesce(au.organizacion_pendiente, false), ac.created_at, ac.id;
 
 select
   count(*) as activaciones_totales,
@@ -306,3 +310,27 @@ select
   (select count(*) from public.activaciones) as activaciones,
   (select count(*) from public.plazas) as plazas,
   (select count(*) from public.equipos) as equipos;
+
+-- ============================================================================
+-- SEGUIMIENTO: activadores pendientes de completar organizacion.
+-- Ejecutar despues de la migracion hasta que el resultado quede vacio.
+-- ============================================================================
+select
+  a.usuario_id,
+  a.nombre,
+  a.email,
+  a.estado,
+  a.plaza as plaza_legacy,
+  a.plaza_base,
+  a.plaza_id,
+  a.equipo_id,
+  case
+    when a.plaza_id is null and a.equipo_id is null then 'SIN_PLAZA_Y_EQUIPO'
+    when a.plaza_id is null then 'SIN_PLAZA'
+    when a.equipo_id is null then 'SIN_EQUIPO'
+    else 'REVISAR_MARCA'
+  end as pendiente
+from public.activadores a
+where a.rol = 'activador'
+  and (a.organizacion_pendiente or a.plaza_id is null or a.equipo_id is null)
+order by a.nombre nulls last, a.usuario_id;

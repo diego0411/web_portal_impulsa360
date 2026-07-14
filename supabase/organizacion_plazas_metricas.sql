@@ -70,20 +70,10 @@ before insert or update of nombre on public.plazas
 for each row execute function public.normalizar_nombre_plaza();
 
 alter table public.activadores add column if not exists plaza_base text;
+alter table public.activadores add column if not exists plaza_id uuid references public.plazas(id);
+alter table public.activadores add column if not exists organizacion_pendiente boolean not null default false;
 update public.activadores set plaza_base = plaza
 where nullif(btrim(plaza_base), '') is null and nullif(btrim(plaza), '') is not null;
-
--- No se inventa una plaza: si un activador no tiene texto resoluble, se aborta toda la transaccion.
-do $$
-begin
-  if exists (
-    select 1 from public.activadores
-    where rol = 'activador' and nullif(btrim(coalesce(plaza_base, plaza)), '') is null
-  ) then
-    raise exception 'Preflight: existen activadores sin plaza resoluble en plaza_base/plaza';
-  end if;
-end;
-$$;
 
 insert into public.plazas(nombre, nombre_normalizado)
 select min(nombre), nombre_normalizado
@@ -195,6 +185,14 @@ insert into public.facturadores (codigo, nombre)
 values ('LEGACY', 'Facturador principal')
 on conflict (codigo) do nothing;
 
+-- Solo se vinculan plazas que coinciden exactamente despues de normalizar.
+update public.activadores a
+set plaza_id = p.id
+from public.plazas p
+where a.rol = 'activador'
+  and nullif(btrim(coalesce(a.plaza_base, a.plaza)), '') is not null
+  and p.nombre_normalizado = lower(unaccent(btrim(coalesce(a.plaza_base, a.plaza))));
+
 -- Un equipo estable por facturador + lider + plaza observada en sus activadores.
 insert into public.equipos (nombre, facturador_id, plaza_id, lider_actual_id)
 select 'Equipo ' || coalesce(l.nombre, l.usuario_id::text) || ' - ' || p.nombre,
@@ -232,23 +230,21 @@ where f.codigo = 'LEGACY'
 on conflict do nothing;
 
 update public.activadores a
-set equipo_id = e.id
+set equipo_id = coalesce(a.equipo_id, e.id),
+    plaza_id = p.id,
+    organizacion_pendiente = false
 from public.plazas p
 join public.equipos e on e.plaza_id = p.id and e.activo
 join public.facturadores f on f.id = e.facturador_id and f.codigo = 'LEGACY'
 where a.rol = 'activador'
   and lower(unaccent(btrim(coalesce(a.plaza_base, a.plaza)))) = p.nombre_normalizado
   and ((a.lider_id is not null and e.lider_actual_id = a.lider_id)
-       or (a.lider_id is null and e.lider_actual_id is null and e.nombre = 'Equipo sin asignar'))
-  and a.equipo_id is null;
+       or (a.lider_id is null and e.lider_actual_id is null and e.nombre = 'Equipo sin asignar'));
 
-do $$
-begin
-  if exists (select 1 from public.activadores where rol = 'activador' and equipo_id is null) then
-    raise exception 'Backfill: existen activadores cuya combinacion lider/plaza no produjo equipo';
-  end if;
-end;
-$$;
+-- Los casos sin fuente confiable permanecen sin plaza/equipo y se atienden desde el portal.
+update public.activadores
+set organizacion_pendiente = true
+where rol = 'activador' and (plaza_id is null or equipo_id is null);
 
 insert into public.equipo_lider_historial (equipo_id, plaza_id, lider_id, inicio, motivo)
 select e.id, e.plaza_id, e.lider_actual_id, now(), 'Migracion inicial'
@@ -261,11 +257,6 @@ select a.usuario_id, a.equipo_id, now(), 'Migracion inicial'
 from public.activadores a
 where a.rol = 'activador' and a.equipo_id is not null
   and not exists (select 1 from public.activador_equipo_historial h where h.activador_id = a.usuario_id and h.fin is null);
-
-alter table public.activadores drop constraint if exists activador_requiere_equipo;
-alter table public.activadores add constraint activador_requiere_equipo
-  check (rol <> 'activador' or equipo_id is not null) not valid;
-alter table public.activadores validate constraint activador_requiere_equipo;
 
 create or replace function public.asignar_lider_equipo(
   p_equipo_id uuid, p_lider_id uuid, p_inicio timestamptz default now(), p_motivo text default null
@@ -294,25 +285,23 @@ create or replace function public.asignar_activador_equipo(
 )
 returns void language plpgsql security definer set search_path = public
 as $$
-declare v_lider uuid; v_plaza_normalizada text; v_plaza_activador text;
+declare v_lider uuid; v_plaza_id uuid; v_plaza_nombre text;
 begin
   if not exists (select 1 from public.activadores where usuario_id = p_activador_id and rol = 'activador') then
     raise exception 'El activador no existe';
   end if;
-  select e.lider_actual_id, p.nombre_normalizado into v_lider, v_plaza_normalizada
+  select e.lider_actual_id, p.id, p.nombre into v_lider, v_plaza_id, v_plaza_nombre
   from public.equipos e join public.plazas p on p.id = e.plaza_id
   where e.id = p_equipo_id and e.activo;
-  select lower(unaccent(btrim(coalesce(plaza_base, plaza)))) into v_plaza_activador
-  from public.activadores where usuario_id = p_activador_id;
-  if v_plaza_normalizada is null then raise exception 'El equipo no existe o esta inactivo'; end if;
-  if v_plaza_activador is distinct from v_plaza_normalizada then
-    raise exception 'La plaza permanente del activador no coincide con la plaza del equipo';
-  end if;
+  if v_plaza_id is null then raise exception 'El equipo no existe o esta inactivo'; end if;
   update public.activador_equipo_historial set fin = p_inicio
   where activador_id = p_activador_id and fin is null and inicio < p_inicio;
   insert into public.activador_equipo_historial(activador_id,equipo_id,inicio,autorizado_por,motivo)
   values (p_activador_id,p_equipo_id,p_inicio,auth.uid(),p_motivo);
-  update public.activadores set equipo_id = p_equipo_id, lider_id = v_lider where usuario_id = p_activador_id;
+  update public.activadores set equipo_id = p_equipo_id, lider_id = v_lider,
+    plaza_id = v_plaza_id, plaza_base = v_plaza_nombre, plaza = v_plaza_nombre,
+    organizacion_pendiente = false
+  where usuario_id = p_activador_id;
 end;
 $$;
 

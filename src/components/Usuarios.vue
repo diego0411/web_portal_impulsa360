@@ -37,7 +37,7 @@ const usuariosFiltrados = computed(() => usuarios.value.filter((u) => {
   const coincideBusqueda = containsNormalized(u.nombre, busqueda.value) || containsNormalized(u.email, busqueda.value)
   return coincideBusqueda && (!filtroRol.value || (u.rol ?? 'activador') === filtroRol.value) &&
     (!filtroEstado.value || (u.estado ?? 'activo') === filtroEstado.value) &&
-    (!filtroPlaza.value || u.plaza === filtroPlaza.value)
+    (!filtroPlaza.value || (u.plaza_nombre || u.plaza_base || u.plaza) === filtroPlaza.value)
 }))
 
 function requestAdmin(path, options = {}) {
@@ -57,6 +57,12 @@ function equiposPara(form) {
 function liderDelEquipo(form) {
   const equipo = organizacion.value.equipos.find((item) => item.id === form.equipo_id)
   return equipo?.lider_actual_id ? (usuariosPorId.value[equipo.lider_actual_id]?.nombre ?? 'Lider asignado') : 'Sin lider vigente'
+}
+function plazaDelEquipo(equipo) { return organizacion.value.plazas.find((item) => item.id === equipo.plaza_id)?.nombre ?? 'Sin plaza' }
+function etiquetaEquipo(equipo) { return `#${equipo.numero} - ${equipo.nombre} · ${plazaDelEquipo(equipo)}` }
+function equiposDelUsuario(usuario) {
+  if (usuario.rol === 'lider') return usuario.equipos_asignados?.map((e) => `#${e.numero} - ${e.nombre} (${e.plaza || 'Sin plaza'})`).join(', ') || 'Sin equipos'
+  return usuario.equipo_numero ? `#${usuario.equipo_numero} - ${usuario.equipo_nombre || 'Equipo'}` : 'Sin equipo'
 }
 function ajustarRol(form) {
   if (form.rol !== 'activador') { form.equipo_id = ''; form.plaza_id = ''; form.lider_id = ''; form.plaza = '' }
@@ -211,13 +217,13 @@ onMounted(cargarUsuarios)
           <template v-if="nuevo.rol === 'activador'">
             <select v-if="organizacion.available" v-model="nuevo.plaza_id" class="input-texto" @change="ajustarPlaza(nuevo)"><option value="">Plaza base</option><option v-for="plaza in organizacion.plazas" :key="plaza.id" :value="plaza.id">{{ plaza.nombre }}</option></select>
             <input v-else v-model="nuevo.plaza" placeholder="Plaza base" class="input-texto">
-            <select v-if="organizacion.available" v-model="nuevo.equipo_id" class="input-texto"><option value="">Equipo</option><option v-for="equipo in equiposPara(nuevo)" :key="equipo.id" :value="equipo.id">#{{ equipo.numero }} - {{ equipo.nombre }}</option></select>
+            <select v-if="organizacion.available" v-model="nuevo.equipo_id" class="input-texto"><option value="">Equipo</option><option v-for="equipo in equiposPara(nuevo)" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select>
             <span v-if="organizacion.available" class="field-label">Lider: {{ liderDelEquipo(nuevo) }}</span>
             <select v-else v-model="nuevo.lider_id" class="input-texto"><option value="">Sin lider</option><option v-for="lider in lideresActivos" :key="lider.usuario_id" :value="lider.usuario_id">{{ lider.nombre }}</option></select>
           </template>
           <template v-if="nuevo.rol === 'lider' && organizacion.available">
             <select v-model="nuevo.facturador_id" class="input-texto"><option value="">Facturador</option><option v-for="item in organizacion.facturadores" :key="item.id" :value="item.id">{{ item.nombre }}</option></select>
-            <label><span class="field-label">Equipos</span><select v-model="nuevo.equipo_ids" class="input-texto" multiple><option v-for="equipo in equiposPara(nuevo)" :key="equipo.id" :value="equipo.id">#{{ equipo.numero }} - {{ equipo.nombre }}</option></select></label>
+            <label><span class="field-label">Equipos por plaza</span><select v-model="nuevo.equipo_ids" class="input-texto" multiple><option v-for="equipo in equiposPara(nuevo)" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select></label>
           </template>
           <textarea v-if="nuevo.estado === 'inhabilitado'" v-model="nuevo.motivo_inhabilitacion" class="input-texto" placeholder="Motivo de inhabilitacion"></textarea>
           <button type="submit" class="boton boton-primario" :disabled="procesando">{{ procesando ? 'Guardando...' : 'Registrar' }}</button>
@@ -233,7 +239,7 @@ onMounted(cargarUsuarios)
         <label><span class="field-label">Plaza</span><select v-model="filtroPlaza" class="input-texto"><option value="">Todas</option><option v-for="item in plazas" :key="item" :value="item">{{ item }}</option></select></label>
       </div>
       <p v-if="loading">Cargando usuarios...</p><p v-else-if="errorMsg" class="mensaje-error">{{ errorMsg }}</p><p v-else-if="!usuariosFiltrados.length" class="panel-empty">No hay usuarios para los filtros seleccionados.</p>
-      <div v-else class="table-wrap modulo-table-wrap"><table class="tabla-usuarios"><thead><tr><th>Nombre</th><th>Correo</th><th>Plaza</th><th>Rol</th><th>Estado</th><th>Lider</th><th>Nueva contrasena</th><th>Acciones</th></tr></thead><tbody>
+      <div v-else class="table-wrap modulo-table-wrap"><table class="tabla-usuarios"><thead><tr><th>Nombre</th><th>Correo</th><th>Plaza base</th><th>Equipo</th><th>Líder actual</th><th>Facturador</th><th>Rol</th><th>Estado</th><th>Nueva contraseña</th><th>Acciones</th></tr></thead><tbody>
         <tr v-for="usuario in usuariosFiltrados" :key="usuario.usuario_id">
           <template v-if="editandoId === usuario.usuario_id">
             <td><input v-model="edicion.nombre" class="input-editar"></td><td><input v-model="edicion.email" type="email" class="input-editar"></td><td>
@@ -242,24 +248,23 @@ onMounted(cargarUsuarios)
                 <input v-else v-model="edicion.plaza" class="input-editar">
               </template><span v-else>-</span>
             </td>
-            <td><select v-model="edicion.rol" class="input-editar" @change="ajustarRol(edicion)"><option v-for="rol in roles" :key="rol" :value="rol">{{ etiqueta(rol) }}</option></select></td>
-            <td><select v-model="edicion.estado" class="input-editar"><option v-for="estado in estados" :key="estado" :value="estado">{{ etiqueta(estado) }}</option></select><textarea v-if="edicion.estado === 'inhabilitado'" v-model="edicion.motivo_inhabilitacion" class="input-editar" placeholder="Motivo obligatorio"></textarea></td>
             <td>
               <template v-if="edicion.rol === 'activador'">
-                <select v-if="organizacion.available" v-model="edicion.equipo_id" class="input-editar"><option value="">Equipo</option><option v-for="equipo in equiposPara(edicion)" :key="equipo.id" :value="equipo.id">#{{ equipo.numero }} - {{ equipo.nombre }}</option></select>
+                <select v-if="organizacion.available" v-model="edicion.equipo_id" class="input-editar"><option value="">Equipo</option><option v-for="equipo in equiposPara(edicion)" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select>
                 <select v-else v-model="edicion.lider_id" class="input-editar"><option value="">Sin lider</option><option v-for="lider in lideresActivos" :key="lider.usuario_id" :value="lider.usuario_id">{{ lider.nombre }}</option></select>
-                <span v-if="organizacion.available" class="field-label">{{ liderDelEquipo(edicion) }}</span>
               </template>
-              <template v-else-if="edicion.rol === 'lider' && organizacion.available">
-                <select v-model="edicion.facturador_id" class="input-editar"><option value="">Facturador</option><option v-for="item in organizacion.facturadores" :key="item.id" :value="item.id">{{ item.nombre }}</option></select>
-                <select v-model="edicion.equipo_ids" class="input-editar" multiple><option v-for="equipo in equiposPara(edicion)" :key="equipo.id" :value="equipo.id">#{{ equipo.numero }} - {{ equipo.nombre }}</option></select>
-              </template><span v-else>Sin asignar</span>
+              <template v-else-if="edicion.rol === 'lider' && organizacion.available"><select v-model="edicion.equipo_ids" class="input-editar" multiple><option v-for="equipo in equiposPara(edicion)" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select></template><span v-else>-</span>
             </td>
+            <td>{{ edicion.rol === 'activador' ? liderDelEquipo(edicion) : '-' }}</td>
+            <td><select v-if="edicion.rol === 'lider' && organizacion.available" v-model="edicion.facturador_id" class="input-editar"><option value="">Facturador</option><option v-for="item in organizacion.facturadores" :key="item.id" :value="item.id">{{ item.nombre }}</option></select><span v-else>{{ edicion.rol === 'activador' ? (usuario.facturador_nombre || '-') : '-' }}</span></td>
+            <td><select v-model="edicion.rol" class="input-editar" @change="ajustarRol(edicion)"><option v-for="rol in roles" :key="rol" :value="rol">{{ etiqueta(rol) }}</option></select></td>
+            <td><select v-model="edicion.estado" class="input-editar"><option v-for="estado in estados" :key="estado" :value="estado">{{ etiqueta(estado) }}</option></select><textarea v-if="edicion.estado === 'inhabilitado'" v-model="edicion.motivo_inhabilitacion" class="input-editar" placeholder="Motivo obligatorio"></textarea></td>
             <td><input v-model="edicion.password" type="password" class="input-editar" placeholder="Opcional (contraseña fuerte)"></td><td><div class="acciones"><button class="boton boton-guardar" :disabled="procesando" @click="guardarEdicion">Guardar</button><button class="boton boton-cancelar" :disabled="procesando" @click="cancelarEdicion">Cancelar</button></div></td>
           </template>
           <template v-else>
-            <td>{{ usuario.nombre || 'Sin nombre' }}</td><td>{{ usuario.email || 'Sin correo' }}</td><td>{{ usuario.plaza_nombre || usuario.plaza_base || usuario.plaza || 'Sin plaza' }}<span v-if="usuario.plaza_temporal_activa" class="scope-pill scope-pill-user">Temporal: {{ usuario.plaza_efectiva }}</span></td><td>{{ etiqueta(usuario.rol ?? 'activador') }}</td>
-            <td><span class="estado-etiqueta" :class="`estado-${usuario.estado ?? 'activo'}`">{{ etiqueta(usuario.estado ?? 'activo') }}</span></td><td>{{ nombreLider(usuario) }}</td><td>-</td>
+            <td>{{ usuario.nombre || 'Sin nombre' }}<span v-if="usuario.organizacion_pendiente" class="scope-pill scope-pill-user">Organización pendiente</span></td><td>{{ usuario.email || 'Sin correo' }}</td><td>{{ usuario.plaza_nombre || usuario.plaza_base || usuario.plaza || 'Sin plaza' }}<span v-if="usuario.plaza_temporal_activa" class="scope-pill scope-pill-user">Temporal: {{ usuario.plaza_efectiva }}</span></td>
+            <td>{{ equiposDelUsuario(usuario) }}</td><td>{{ nombreLider(usuario) }}</td><td>{{ usuario.facturador_nombre || '-' }}</td><td>{{ etiqueta(usuario.rol ?? 'activador') }}</td>
+            <td><span class="estado-etiqueta" :class="`estado-${usuario.estado ?? 'activo'}`">{{ etiqueta(usuario.estado ?? 'activo') }}</span></td><td>-</td>
             <td><div class="acciones"><label v-if="usuario.rol === 'activador'" class="scope-pill"><input type="checkbox" :checked="usuario.plaza_temporal_activa" :disabled="procesando" @change="cambiarPlazaTemporal(usuario, $event.target.checked)"> Plaza temporal</label><button class="boton boton-editar" :disabled="procesando" @click="editarUsuario(usuario)">Editar</button><button v-if="(usuario.estado ?? 'activo') === 'activo'" class="boton boton-eliminar" :disabled="procesando" @click="abrirInhabilitacion(usuario)">Inhabilitar</button><button v-else class="boton boton-guardar" :disabled="procesando" @click="activarUsuario(usuario)">Activar</button></div></td>
           </template>
         </tr>

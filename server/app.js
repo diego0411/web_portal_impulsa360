@@ -649,27 +649,47 @@ export function createAdminApiApp({ env = process.env } = {}) {
       }
       if (teamsError || temporaryError) return users
 
+      let { data: ledTeams, error: ledTeamsError } = userIds.length
+        ? await adminSupabase.from('equipos')
+          .select('id,numero,nombre,facturador_id,lider_actual_id,plaza_id,activo').in('lider_actual_id', userIds)
+        : { data: [], error: null }
+      if (ledTeamsError && userIds.length) {
+        const legacyLedTeams = await adminSupabase.from('equipos')
+          .select('id,numero,nombre,facturador_id,lider_actual_id,activo').in('lider_actual_id', userIds)
+        ledTeams = legacyLedTeams.data
+        ledTeamsError = legacyLedTeams.error
+      }
+      if (ledTeamsError) return users
+      teams = [...new Map([...(teams ?? []), ...(ledTeams ?? [])].map((team) => [team.id, team])).values()]
+
       const facturadorIds = [...new Set((teams ?? []).map((team) => team.facturador_id).filter(Boolean))]
       const plazaIds = [...new Set((teams ?? []).map((team) => team.plaza_id).filter(Boolean))]
-      const [{ data: billers, error: billersError }, { data: plazas, error: plazasError }] = await Promise.all([
+      const leaderIds = [...new Set((teams ?? []).map((team) => team.lider_actual_id).filter(Boolean))]
+      const [{ data: billers, error: billersError }, { data: plazas, error: plazasError }, { data: leaders, error: leadersError }] = await Promise.all([
         facturadorIds.length
           ? adminSupabase.from('facturadores').select('id,codigo,nombre').in('id', facturadorIds)
           : Promise.resolve({ data: [], error: null }),
         plazaIds.length
           ? adminSupabase.from('plazas').select('id,nombre').in('id', plazaIds)
           : Promise.resolve({ data: [], error: null }),
+        leaderIds.length
+          ? adminSupabase.from('activadores').select('usuario_id,nombre').in('usuario_id', leaderIds)
+          : Promise.resolve({ data: [], error: null }),
       ])
-      if (billersError || plazasError) return users
+      if (billersError || plazasError || leadersError) return users
 
       const teamsById = new Map((teams ?? []).map((team) => [team.id, team]))
       const billersById = new Map((billers ?? []).map((biller) => [biller.id, biller]))
       const plazasById = new Map((plazas ?? []).map((plaza) => [plaza.id, plaza]))
+      const leadersById = new Map((leaders ?? []).map((leader) => [leader.usuario_id, leader]))
       const temporaryByUser = new Map((temporaryPlazas ?? []).map((item) => [item.activador_id, item]))
       return users.map((user) => {
         const team = teamsById.get(user.equipo_id)
         const biller = billersById.get(team?.facturador_id)
         const temporary = temporaryByUser.get(user.usuario_id)
         const teamPlaza = plazasById.get(team?.plaza_id)
+        const assignedTeams = (teams ?? []).filter((item) => item.lider_actual_id === user.usuario_id)
+        const assignedBiller = billersById.get(assignedTeams[0]?.facturador_id)
         return {
           ...user,
           plaza_base: user.plaza_base ?? user.plaza ?? null,
@@ -680,9 +700,19 @@ export function createAdminApiApp({ env = process.env } = {}) {
           plaza_nombre: teamPlaza?.nombre ?? user.plaza_base ?? user.plaza ?? null,
           equipo_numero: team?.numero ?? null,
           equipo_nombre: team?.nombre ?? null,
-          facturador_id: biller?.id ?? null,
-          facturador_codigo: biller?.codigo ?? null,
-          facturador_nombre: biller?.nombre ?? null,
+          equipos_asignados: assignedTeams.map((item) => ({
+            id: item.id,
+            numero: item.numero,
+            nombre: item.nombre,
+            plaza: plazasById.get(item.plaza_id)?.nombre ?? null,
+            facturador: billersById.get(item.facturador_id)?.nombre ?? null,
+            activo: item.activo,
+          })),
+          lider_id: team?.lider_actual_id ?? user.lider_id ?? null,
+          lider_nombre: leadersById.get(team?.lider_actual_id ?? user.lider_id)?.nombre ?? null,
+          facturador_id: biller?.id ?? assignedBiller?.id ?? null,
+          facturador_codigo: biller?.codigo ?? assignedBiller?.codigo ?? null,
+          facturador_nombre: biller?.nombre ?? assignedBiller?.nombre ?? null,
         }
       })
     } catch {
@@ -751,18 +781,6 @@ export function createAdminApiApp({ env = process.env } = {}) {
       equipos: teamsResult.data ?? [],
       facturadores: billersResult.data ?? [],
     }
-  }
-
-  async function resolveSelectedTeam(teamId) {
-    if (!teamId) return { available: true, team: null }
-    const { data, error } = await adminSupabase.from('equipos')
-      .select('id,numero,nombre,facturador_id,plaza_id,lider_actual_id,activo,plazas!inner(nombre)')
-      .eq('id', teamId).eq('activo', true).maybeSingle()
-    if (error) {
-      if (isMissingOrganizationSchema(error)) return { available: false, team: null }
-      throw error
-    }
-    return { available: true, team: data ?? null }
   }
 
   async function syncLeaderTeams(leaderId, teamIds) {
@@ -973,17 +991,21 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const nombre = normalizeText(rawNombre)
       let plaza = normalizeNullableText(rawPlaza)
       let teamId = null
+      let teamPlazaId = null
 
-      if (rol === 'activador' && requestedTeamId) {
-        const selected = await resolveSelectedTeam(requestedTeamId)
-        if (selected.available && !selected.team) {
-          jsonError(res, 400, 'El equipo seleccionado no existe o esta inactivo.')
-          return
-        }
-        if (selected.available) {
-          teamId = selected.team.id
-          liderId = selected.team.lider_actual_id ?? null
-          plaza = selected.team.plazas?.nombre ?? plaza
+      if (rol === 'activador') {
+        const options = await loadOrganizationOptions()
+        if (options.available) {
+          const selectedTeam = options.equipos.find((team) => team.id === requestedTeamId && team.activo)
+          const selectedPlaza = options.plazas.find((item) => item.id === selectedTeam?.plaza_id)
+          if (!selectedTeam || !selectedPlaza) {
+            jsonError(res, 400, 'La plaza base y un equipo activo son obligatorios para el activador.')
+            return
+          }
+          teamId = selectedTeam.id
+          teamPlazaId = selectedTeam.plaza_id
+          liderId = selectedTeam.lider_actual_id ?? null
+          plaza = selectedPlaza.nombre
         }
       }
       if (rol === 'activador' && !teamId) teamId = await resolveTeamIdForLeader(liderId, plaza)
@@ -1073,6 +1095,10 @@ export function createAdminApiApp({ env = process.env } = {}) {
       if (teamId) {
         insertedUser.equipo_id = teamId
         insertedUser.plaza_base = plaza
+        if (teamPlazaId) {
+          insertedUser.plaza_id = teamPlazaId
+          insertedUser.organizacion_pendiente = false
+        }
       }
 
       const { error: insertErr } = await adminSupabase.from('activadores').insert(insertedUser)
@@ -1394,16 +1420,20 @@ export function createAdminApiApp({ env = process.env } = {}) {
       }
 
       let teamId = null
-      if (rol === 'activador' && requestedTeamId) {
-        const selected = await resolveSelectedTeam(requestedTeamId)
-        if (selected.available && !selected.team) {
-          jsonError(res, 400, 'El equipo seleccionado no existe o esta inactivo.')
-          return
-        }
-        if (selected.available) {
-          teamId = selected.team.id
-          liderId = selected.team.lider_actual_id ?? null
-          plaza = selected.team.plazas?.nombre ?? plaza
+      let teamPlazaId = null
+      if (rol === 'activador') {
+        const options = await loadOrganizationOptions()
+        if (options.available) {
+          const selectedTeam = options.equipos.find((team) => team.id === requestedTeamId && team.activo)
+          const selectedPlaza = options.plazas.find((item) => item.id === selectedTeam?.plaza_id)
+          if (!selectedTeam || !selectedPlaza) {
+            jsonError(res, 400, 'La plaza base y un equipo activo son obligatorios para el activador.')
+            return
+          }
+          teamId = selectedTeam.id
+          teamPlazaId = selectedTeam.plaza_id
+          liderId = selectedTeam.lider_actual_id ?? null
+          plaza = selectedPlaza.nombre
         }
       }
 
@@ -1457,9 +1487,15 @@ export function createAdminApiApp({ env = process.env } = {}) {
       if (teamId) {
         tableUpdatePayload.equipo_id = teamId
         tableUpdatePayload.plaza_base = plaza
+        if (teamPlazaId) {
+          tableUpdatePayload.plaza_id = teamPlazaId
+          tableUpdatePayload.organizacion_pendiente = false
+        }
       }
       if (rol !== 'activador' && Object.prototype.hasOwnProperty.call(previousRow, 'equipo_id')) {
         tableUpdatePayload.equipo_id = null
+        if (Object.prototype.hasOwnProperty.call(previousRow, 'plaza_id')) tableUpdatePayload.plaza_id = null
+        if (Object.prototype.hasOwnProperty.call(previousRow, 'organizacion_pendiente')) tableUpdatePayload.organizacion_pendiente = false
       }
       if (shouldUpdateEmail) {
         tableUpdatePayload.email = email
@@ -1512,6 +1548,8 @@ export function createAdminApiApp({ env = process.env } = {}) {
           }
         if (Object.prototype.hasOwnProperty.call(previousRow, 'equipo_id')) rollbackPayload.equipo_id = previousRow.equipo_id
         if (Object.prototype.hasOwnProperty.call(previousRow, 'plaza_base')) rollbackPayload.plaza_base = previousRow.plaza_base
+        if (Object.prototype.hasOwnProperty.call(previousRow, 'plaza_id')) rollbackPayload.plaza_id = previousRow.plaza_id
+        if (Object.prototype.hasOwnProperty.call(previousRow, 'organizacion_pendiente')) rollbackPayload.organizacion_pendiente = previousRow.organizacion_pendiente
         await adminSupabase
           .from('activadores')
           .update(rollbackPayload)

@@ -137,6 +137,7 @@ onMounted(async () => {
             <td>{{ nombreLider(impulsador) }}</td>
             <td>
               <span>{{ impulsador.equipo_numero ? `#${impulsador.equipo_numero} - ${impulsador.equipo_nombre || 'Equipo'}` : '-' }}</span>
+              <span v-if="impulsador.organizacion_pendiente" class="scope-pill scope-pill-user">Organización pendiente</span>
             </td>
             <td><span v-if="impulsador.plaza_temporal_activa" class="scope-pill scope-pill-user">{{ impulsador.plaza_efectiva }}</span><span v-else>-</span></td>
           </tr>
