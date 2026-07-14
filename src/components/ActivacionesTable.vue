@@ -11,6 +11,7 @@ import {
 } from '../lib/feedback'
 import { isValidEmail, normalizeEmail, normalizeText } from '../lib/textUtils'
 import { useAuth } from '../lib/authStore'
+import { AUTH_ENABLED } from '../lib/featureFlags'
 
 const props = defineProps({
   activaciones: {
@@ -45,6 +46,7 @@ const formularioEdicion = ref({})
 const motivoEdicion = ref('')
 const { username: apiUser, password: apiPass, hasCredentials } = useAdminApiAuth()
 const { isAdmin } = useAuth()
+const canAdminister = computed(() => !AUTH_ENABLED || isAdmin.value)
 
 function getCiudadActivacion(activacion) {
   return (
@@ -705,7 +707,7 @@ async function exportarAExcelConImagenes() {
         Filtra la base por rango de fechas, impulsador, plaza o distrito y exporta los resultados.
       </p>
     </div>
-    <p v-if="isAdmin && !hasCredentials" class="capacity-detail">
+    <p v-if="canAdminister && !hasCredentials" class="capacity-detail">
       Eliminacion disponible cuando conectas la API admin en otro modulo.
     </p>
 
@@ -793,7 +795,7 @@ async function exportarAExcelConImagenes() {
             <td>
               <div class="acciones">
                 <button class="boton boton-editar" @click.stop="abrirDetalle(activacion)">Ver detalle</button>
-                <button v-if="isAdmin" class="boton boton-eliminar" :disabled="!hasCredentials || deletingActivationId === activacion.id || !activacion.id" @click.stop="eliminarActivacion(activacion)">{{ deletingActivationId === activacion.id ? 'Eliminando...' : !activacion.id ? 'Sin ID' : 'Eliminar' }}</button>
+                <button v-if="canAdminister" class="boton boton-eliminar" :disabled="!hasCredentials || deletingActivationId === activacion.id || !activacion.id" @click.stop="eliminarActivacion(activacion)">{{ deletingActivationId === activacion.id ? 'Eliminando...' : !activacion.id ? 'Sin ID' : 'Eliminar' }}</button>
               </div>
             </td>
           </tr>
@@ -806,7 +808,7 @@ async function exportarAExcelConImagenes() {
         <aside class="detalle-activacion" role="dialog" aria-modal="true" aria-label="Detalle de activacion">
           <header class="detalle-header">
             <div><p class="view-kicker">Registro de activacion</p><h3 class="detalle-title">{{ getClienteComercio(activacionSeleccionada) }}</h3></div>
-            <button v-if="isAdmin && !editandoActivacion" type="button" class="boton boton-editar" :disabled="!hasCredentials || !activacionSeleccionada.id" @click="iniciarEdicion">Editar</button>
+            <button v-if="canAdminister && !editandoActivacion" type="button" class="boton boton-editar" :disabled="!hasCredentials || !activacionSeleccionada.id" @click="iniciarEdicion">Editar</button>
             <button type="button" class="detalle-close" aria-label="Cerrar detalle" @click="cerrarDetalle">×</button>
           </header>
           <form v-if="editandoActivacion" class="detalle-body" @submit.prevent="guardarEdicion">
