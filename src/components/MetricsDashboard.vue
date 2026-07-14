@@ -5,750 +5,206 @@ import { fetchAllActivaciones } from '../lib/activacionesService'
 const activaciones = ref([])
 const loading = ref(true)
 const errorMsg = ref(null)
-
-const filtroFecha = ref('')
-const filtroImpulsador = ref('')
+const filtroDesde = ref('')
+const filtroHasta = ref('')
 const filtroPlaza = ref('')
-const filtroDistrito = ref('')
+const filtroActivador = ref('')
 const filtroTipo = ref('')
-
-const estadoConfig = [
-  { key: 'descargo_app', label: 'Descarga App' },
-  { key: 'registro', label: 'Registro' },
-  { key: 'cash_in', label: 'Cash In' },
-  { key: 'cash_out', label: 'Cash Out' },
-  { key: 'p2p', label: 'P2P' },
-  { key: 'qr_fisico', label: 'QR Fisico' },
-  { key: 'respaldo', label: 'Respaldo' },
-  { key: 'hubo_error', label: 'Error Reportado' },
-]
-
-const embudoConfig = [
-  { key: 'descargo_app', label: '1. Descarga App' },
-  { key: 'registro', label: '2. Registro' },
-  { key: 'cash_in', label: '3. Cash In' },
-  { key: 'cash_out', label: '4. Cash Out' },
-  { key: 'p2p', label: '5. P2P' },
-  { key: 'qr_fisico', label: '6. QR Fisico' },
-  { key: 'respaldo', label: '7. Respaldo' },
-]
-
-const plazaPalette = [
-  '#1769ff',
-  '#0fa968',
-  '#ff8a00',
-  '#0f4ecc',
-  '#2d9bd8',
-  '#8c57d1',
-  '#b44f87',
-  '#3f7f5f',
-]
-
+const filtroLider = ref('')
 const numberFormatter = new Intl.NumberFormat('es-BO')
-const percentFormatter = new Intl.NumberFormat('es-BO', { maximumFractionDigits: 1 })
 
 onMounted(async () => {
   loading.value = true
   errorMsg.value = null
-
   try {
-    activaciones.value = await fetchAllActivaciones({
-      columns:
-        'id,fecha_activacion,impulsador,plaza,zona_activacion,tipo_activacion,descargo_app,registro,cash_in,cash_out,p2p,qr_fisico,respaldo,hubo_error',
-    })
+    activaciones.value = await fetchAllActivaciones()
   } catch (error) {
-    console.error('Error al cargar datos:', error)
-    errorMsg.value = 'Error al obtener activaciones.'
+    console.error('Error al cargar metricas:', error)
+    errorMsg.value = 'No fue posible obtener las activaciones.'
   } finally {
     loading.value = false
   }
 })
 
-function ordenarTexto(a, b) {
-  return a.localeCompare(b, 'es', { sensitivity: 'base' })
+function texto(value) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function normalizado(value) {
+  return texto(value).toLocaleLowerCase('es')
+}
+
+function fechaRegistro(item) {
+  const value = texto(item.fecha_activacion) || texto(item.created_at)
+  return value.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ''
+}
+
+function plazaRegistro(item) {
+  return texto(item.ciudad_activacion) || texto(item.plaza) || 'Sin plaza'
+}
+
+function liderRegistro(item) {
+  return texto(item.lider_nombre) || texto(item.lider) || texto(item.nombre_lider) || ''
 }
 
 function formatNumber(value) {
   return numberFormatter.format(Number(value) || 0)
 }
 
-function formatPercent(value) {
-  const safe = Number.isFinite(value) ? value : 0
-  return `${percentFormatter.format(safe)}%`
+function formatDate(value) {
+  if (!value) return 'Sin fecha'
+  const [year, month, day] = value.split('-')
+  return year && month && day ? `${day}/${month}/${year}` : value
 }
 
-function formatFecha(value) {
-  if (!value || typeof value !== 'string') {
-    return '-'
-  }
-
-  const parts = value.split('-')
-  if (parts.length !== 3) {
-    return value
-  }
-
-  return `${parts[2]}/${parts[1]}/${parts[0]}`
+function sumar(map, key) {
+  const label = texto(key) || 'Sin especificar'
+  map.set(label, (map.get(label) ?? 0) + 1)
 }
 
-function normalizarTexto(value) {
-  return typeof value === 'string' ? value.toLowerCase() : ''
-}
-
-function withAlpha(hexColor, alpha = 'A6') {
-  if (/^#[0-9a-fA-F]{6}$/.test(hexColor)) {
-    return `${hexColor}${alpha}`
-  }
-  return hexColor
-}
-
-function rankingPorCampo(field, limit = 5) {
-  const conteo = {}
-
-  for (const activacion of activacionesFiltradas.value) {
-    const raw = activacion[field]
-    const label = typeof raw === 'string' ? raw.trim() : ''
-    if (!label) continue
-    conteo[label] = (conteo[label] || 0) + 1
-  }
-
-  return Object.entries(conteo)
-    .sort((a, b) => b[1] - a[1])
+function ranking(map, limit = Infinity) {
+  return [...map.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'es'))
     .slice(0, limit)
-    .map(([label, conteoCampo]) => ({
-      label,
-      conteo: conteoCampo,
-      porcentaje: totalActivaciones.value
-        ? (conteoCampo / totalActivaciones.value) * 100
-        : 0,
-    }))
+    .map(([label, value]) => ({ label, value }))
 }
 
-function limpiarFiltros() {
-  filtroFecha.value = ''
-  filtroImpulsador.value = ''
-  filtroPlaza.value = ''
-  filtroDistrito.value = ''
-  filtroTipo.value = ''
-}
-
-const plazasDisponibles = computed(() => {
-  return [...new Set(activaciones.value.map((item) => item.plaza).filter(Boolean))].sort(
-    ordenarTexto
-  )
-})
-
-const distritosDisponibles = computed(() => {
-  return [
-    ...new Set(activaciones.value.map((item) => item.zona_activacion).filter(Boolean)),
-  ].sort(ordenarTexto)
-})
-
-const tiposDisponibles = computed(() => {
-  return [
-    ...new Set(activaciones.value.map((item) => item.tipo_activacion).filter(Boolean)),
-  ].sort(ordenarTexto)
-})
-
-const activacionesFiltradas = computed(() => {
-  const queryImpulsador = normalizarTexto(filtroImpulsador.value.trim())
-
-  return activaciones.value.filter((activacion) => {
-    const coincideFecha =
-      !filtroFecha.value || activacion.fecha_activacion === filtroFecha.value
-    const coincideImpulsador =
-      !queryImpulsador ||
-      normalizarTexto(activacion.impulsador).includes(queryImpulsador)
-    const coincidePlaza = !filtroPlaza.value || activacion.plaza === filtroPlaza.value
-    const coincideDistrito =
-      !filtroDistrito.value || activacion.zona_activacion === filtroDistrito.value
-    const coincideTipo =
-      !filtroTipo.value || activacion.tipo_activacion === filtroTipo.value
-
-    return (
-      coincideFecha &&
-      coincideImpulsador &&
-      coincidePlaza &&
-      coincideDistrito &&
-      coincideTipo
-    )
-  })
-})
-
-const totalActivaciones = computed(() => activacionesFiltradas.value.length)
-
-const hayFiltrosActivos = computed(() => {
-  return Boolean(
-    filtroFecha.value ||
-      filtroImpulsador.value ||
-      filtroPlaza.value ||
-      filtroDistrito.value ||
-      filtroTipo.value
-  )
-})
-
-const rangoFechas = computed(() => {
-  const fechas = activacionesFiltradas.value
-    .map((item) => item.fecha_activacion)
-    .filter(Boolean)
-    .sort()
-
-  if (!fechas.length) {
-    return 'Sin datos'
+const opciones = computed(() => {
+  const plazas = new Set()
+  const activadores = new Set()
+  const tipos = new Set()
+  const lideres = new Set()
+  for (const item of activaciones.value) {
+    plazas.add(plazaRegistro(item))
+    if (texto(item.impulsador)) activadores.add(texto(item.impulsador))
+    if (texto(item.tipo_activacion)) tipos.add(texto(item.tipo_activacion))
+    if (liderRegistro(item)) lideres.add(liderRegistro(item))
   }
-
-  const inicio = fechas[0]
-  const fin = fechas[fechas.length - 1]
-  return inicio === fin ? formatFecha(inicio) : `${formatFecha(inicio)} - ${formatFecha(fin)}`
+  const ordenar = (values) => [...values].sort((a, b) => a.localeCompare(b, 'es'))
+  return { plazas: ordenar(plazas), activadores: ordenar(activadores), tipos: ordenar(tipos), lideres: ordenar(lideres) }
 })
 
-const metricasEstado = computed(() => {
-  const total = totalActivaciones.value
-
-  return estadoConfig.map((estado) => {
-    const conteo = activacionesFiltradas.value.filter((item) => item[estado.key] === true).length
-    return {
-      ...estado,
-      conteo,
-      porcentaje: total ? (conteo / total) * 100 : 0,
-    }
-  })
-})
-
-const metricasEstadoMap = computed(() => {
-  return Object.fromEntries(metricasEstado.value.map((item) => [item.key, item]))
-})
-
-const impulsadoresActivos = computed(() => {
-  return new Set(
-    activacionesFiltradas.value.map((item) => item.impulsador).filter(Boolean)
-  ).size
-})
-
-const plazasActivas = computed(() => {
-  return new Set(activacionesFiltradas.value.map((item) => item.plaza).filter(Boolean)).size
-})
-
-const distritosActivos = computed(() => {
-  return new Set(
-    activacionesFiltradas.value.map((item) => item.zona_activacion).filter(Boolean)
-  ).size
-})
-
-const tarjetasResumen = computed(() => {
-  const registro = metricasEstadoMap.value.registro ?? { conteo: 0, porcentaje: 0 }
-  const errores = metricasEstadoMap.value.hubo_error ?? { conteo: 0, porcentaje: 0 }
-  const cashIn = metricasEstadoMap.value.cash_in ?? { conteo: 0, porcentaje: 0 }
-  const conversionRegistroCashIn = registro.conteo
-    ? (cashIn.conteo / registro.conteo) * 100
-    : 0
-
-  return [
-    {
-      key: 'activaciones',
-      label: 'Activaciones',
-      value: formatNumber(totalActivaciones.value),
-      note: `Rango: ${rangoFechas.value}`,
-    },
-    {
-      key: 'impulsadores',
-      label: 'Impulsadores Activos',
-      value: formatNumber(impulsadoresActivos.value),
-      note: 'Con al menos una activacion',
-    },
-    {
-      key: 'plazas',
-      label: 'Plazas Activas',
-      value: formatNumber(plazasActivas.value),
-      note: 'Cobertura operativa actual',
-    },
-    {
-      key: 'distritos',
-      label: 'Distritos Activos',
-      value: formatNumber(distritosActivos.value),
-      note: 'Zonas con actividad',
-    },
-    {
-      key: 'registro',
-      label: 'Tasa de Registro',
-      value: formatPercent(registro.porcentaje),
-      note: `${formatNumber(registro.conteo)} comercios registrados`,
-    },
-    {
-      key: 'conversion',
-      label: 'Registro -> Cash In',
-      value: formatPercent(conversionRegistroCashIn),
-      note: `${formatNumber(cashIn.conteo)} con cash in`,
-    },
-    {
-      key: 'errores',
-      label: 'Tasa de Error',
-      value: formatPercent(errores.porcentaje),
-      note: `${formatNumber(errores.conteo)} casos con error`,
-    },
-  ]
-})
-
-const embudoOperacional = computed(() => {
-  const total = totalActivaciones.value
-  let pasoAnterior = total
-
-  return embudoConfig.map((paso, index) => {
-    const etapasRequeridas = embudoConfig.slice(0, index + 1).map((item) => item.key)
-    const conteo = activacionesFiltradas.value.filter((item) =>
-      etapasRequeridas.every((key) => item[key] === true)
-    ).length
-
-    const porcentajeTotal = total ? (conteo / total) * 100 : 0
-    const porcentajePasoAnterior = pasoAnterior ? (conteo / pasoAnterior) * 100 : 0
-    pasoAnterior = conteo
-
-    return {
-      ...paso,
-      conteo,
-      porcentajeTotal,
-      porcentajePasoAnterior,
-    }
-  })
-})
-
-const plazaDistritoRanking = computed(() => {
-  const map = {}
-
-  for (const activacion of activacionesFiltradas.value) {
-    const plaza =
-      typeof activacion.plaza === 'string' && activacion.plaza.trim()
-        ? activacion.plaza.trim()
-        : 'Sin Plaza'
-    const distrito =
-      typeof activacion.zona_activacion === 'string' && activacion.zona_activacion.trim()
-        ? activacion.zona_activacion.trim()
-        : 'Sin Distrito'
-
-    if (!map[plaza]) {
-      map[plaza] = { total: 0, distritos: {} }
-    }
-
-    map[plaza].total += 1
-    map[plaza].distritos[distrito] = (map[plaza].distritos[distrito] || 0) + 1
-  }
-
-  return Object.entries(map)
-    .map(([plaza, payload]) => ({
-      plaza,
-      total: payload.total,
-      distritos: Object.entries(payload.distritos)
-        .map(([distrito, conteo]) => ({ distrito, conteo }))
-        .sort((a, b) => b.conteo - a.conteo),
-    }))
-    .sort((a, b) => b.total - a.total)
-})
-
-const plazaDistritoGrafico = computed(() => {
-  const plazas = plazaDistritoRanking.value
-  const total = totalActivaciones.value
-  const maxValor = Math.max(1, ...plazas.map((item) => item.total))
-
-  const plazasColor = plazas.map((item, index) => ({
-    name: item.plaza,
-    total: item.total,
-    color: plazaPalette[index % plazaPalette.length],
-  }))
-
+const dashboard = computed(() => {
   const rows = []
+  const porDia = new Map()
+  const porPlaza = new Map()
+  const porActivador = new Map()
+  const porTipo = new Map()
+  const erroresPorTipo = new Map()
+  const kpis = { total: 0, tiendasBarrio: 0, comercios: 0, cashIn: 0, errores: 0, plazasTemporales: 0 }
+  const activadorQuery = normalizado(filtroActivador.value)
 
-  plazas.forEach((plaza, plazaIndex) => {
-    const color = plazasColor[plazaIndex].color
-    const porcentajeSobreTotal = total ? (plaza.total / total) * 100 : 0
+  for (const item of activaciones.value) {
+    const fecha = fechaRegistro(item)
+    const plaza = plazaRegistro(item)
+    const activador = texto(item.impulsador) || 'Sin activador'
+    const tipo = texto(item.tipo_activacion) || 'Sin especificar'
+    const lider = liderRegistro(item)
+    if (filtroDesde.value && (!fecha || fecha < filtroDesde.value)) continue
+    if (filtroHasta.value && (!fecha || fecha > filtroHasta.value)) continue
+    if (filtroPlaza.value && plaza !== filtroPlaza.value) continue
+    if (activadorQuery && !normalizado(activador).includes(activadorQuery)) continue
+    if (filtroTipo.value && tipo !== filtroTipo.value) continue
+    if (filtroLider.value && lider !== filtroLider.value) continue
 
-    rows.push({
-      id: `plaza-${plazaIndex}`,
-      type: 'plaza',
-      groupStart: plazaIndex > 0,
-      label: plaza.plaza,
-      plaza: plaza.plaza,
-      color,
-      barColor: color,
-      ratio: Math.max(8, (plaza.total / maxValor) * 100),
-      valueText: `${formatNumber(plaza.total)} (${formatPercent(porcentajeSobreTotal)})`,
-      valueDetail: `${formatNumber(plaza.total)} activaciones de ${plaza.plaza}`,
-    })
-
-    plaza.distritos.forEach((distrito, distritoIndex) => {
-      const porcentajeSobrePlaza = plaza.total ? (distrito.conteo / plaza.total) * 100 : 0
-
-      rows.push({
-        id: `plaza-${plazaIndex}-dist-${distritoIndex}`,
-        type: 'distrito',
-        groupStart: false,
-        label: distrito.distrito,
-        plaza: plaza.plaza,
-        color,
-        barColor: withAlpha(color, '9E'),
-        ratio: Math.max(3, (distrito.conteo / maxValor) * 100),
-        valueText: `${formatNumber(distrito.conteo)} (${formatPercent(porcentajeSobrePlaza)})`,
-        valueDetail: `${formatNumber(distrito.conteo)} activaciones de ${distrito.distrito}`,
-      })
-    })
-  })
+    rows.push(item)
+    kpis.total += 1
+    const clasificacion = `${normalizado(item.tipo_activacion)} ${normalizado(item.tipo_comercio)}`
+    if (clasificacion.includes('tienda') && clasificacion.includes('barrio')) kpis.tiendasBarrio += 1
+    if (clasificacion.includes('comercio')) kpis.comercios += 1
+    if (item.cash_in === true) kpis.cashIn += 1
+    if (item.hubo_error === true) {
+      kpis.errores += 1
+      sumar(erroresPorTipo, texto(item.tipo_error) || 'Sin tipo')
+    }
+    if (item.es_plaza_temporal === true) kpis.plazasTemporales += 1
+    sumar(porDia, fecha || 'Sin fecha')
+    sumar(porPlaza, plaza)
+    sumar(porActivador, activador)
+    sumar(porTipo, tipo)
+  }
 
   return {
-    plazas: plazasColor,
     rows,
+    kpis,
+    porDia: ranking(porDia).sort((a, b) => a.label.localeCompare(b.label)),
+    porPlaza: ranking(porPlaza),
+    porActivador: ranking(porActivador, 10),
+    porTipo: ranking(porTipo),
+    erroresPorTipo: ranking(erroresPorTipo),
   }
 })
 
-const topActivadores = computed(() => rankingPorCampo('impulsador', 5))
-const topTipos = computed(() => rankingPorCampo('tipo_activacion', 5))
+const tarjetas = computed(() => [
+  { key: 'total', label: 'Total de activaciones', value: dashboard.value.kpis.total, note: 'Registros en el corte actual' },
+  { key: 'tiendas', label: 'Tiendas de barrio', value: dashboard.value.kpis.tiendasBarrio, note: 'Identificadas en los datos' },
+  { key: 'comercios', label: 'Comercios', value: dashboard.value.kpis.comercios, note: 'Activaciones comerciales' },
+  { key: 'cash-in', label: 'Con Cash-In', value: dashboard.value.kpis.cashIn, note: 'Cash-In completado' },
+  { key: 'errores', label: 'Registros con error', value: dashboard.value.kpis.errores, note: 'Incidencias reportadas' },
+  { key: 'temporales', label: 'Plazas temporales', value: dashboard.value.kpis.plazasTemporales, note: 'Marcadas como temporales' },
+])
 
-const hallazgos = computed(() => {
-  if (!totalActivaciones.value) {
-    return []
-  }
+const hayFiltros = computed(() => Boolean(filtroDesde.value || filtroHasta.value || filtroPlaza.value || filtroActivador.value || filtroTipo.value || filtroLider.value))
 
-  const registro = metricasEstadoMap.value.registro?.porcentaje ?? 0
-  const errores = metricasEstadoMap.value.hubo_error?.porcentaje ?? 0
-  const cashIn = metricasEstadoMap.value.cash_in?.porcentaje ?? 0
-  const respaldo = metricasEstadoMap.value.respaldo?.porcentaje ?? 0
-  const liderPlaza = plazaDistritoRanking.value[0]
-  const liderImpulsador = topActivadores.value[0]
+function limpiarFiltros() {
+  filtroDesde.value = ''
+  filtroHasta.value = ''
+  filtroPlaza.value = ''
+  filtroActivador.value = ''
+  filtroTipo.value = ''
+  filtroLider.value = ''
+}
 
-  const data = []
-
-  data.push(
-    registro < 50
-      ? {
-          tone: 'warn',
-          title: 'Registro por debajo de objetivo',
-          detail: `La tasa de registro actual es ${formatPercent(registro)}.`,
-        }
-      : {
-          tone: 'ok',
-          title: 'Registro en buen nivel',
-          detail: `La tasa de registro se mantiene en ${formatPercent(registro)}.`,
-        }
-  )
-
-  data.push(
-    errores > 12
-      ? {
-          tone: 'alert',
-          title: 'Incidencia de errores alta',
-          detail: `Los errores representan ${formatPercent(errores)} del total.`,
-        }
-      : {
-          tone: 'ok',
-          title: 'Error operativo controlado',
-          detail: `La tasa de error se mantiene en ${formatPercent(errores)}.`,
-        }
-  )
-
-  data.push(
-    cashIn < 35
-      ? {
-          tone: 'warn',
-          title: 'Conversion a Cash In baja',
-          detail: `Solo ${formatPercent(cashIn)} llega a cash in.`,
-        }
-      : {
-          tone: 'info',
-          title: 'Buen avance a Cash In',
-          detail: `${formatPercent(cashIn)} de activaciones completa cash in.`,
-        }
-  )
-
-  data.push(
-    respaldo < 40
-      ? {
-          tone: 'warn',
-          title: 'Uso de respaldo mejorable',
-          detail: `El respaldo esta activo en ${formatPercent(respaldo)} de casos.`,
-        }
-      : {
-          tone: 'info',
-          title: 'Respaldo con traccion',
-          detail: `${formatPercent(respaldo)} incluye respaldo operativo.`,
-        }
-  )
-
-  if (liderPlaza) {
-    data.push({
-      tone: 'info',
-      title: `Plaza lider: ${liderPlaza.plaza}`,
-      detail: `${formatNumber(liderPlaza.total)} activaciones (${formatPercent((liderPlaza.total / totalActivaciones.value) * 100)} del total).`,
-    })
-  }
-
-  if (liderImpulsador) {
-    data.push({
-      tone: 'info',
-      title: `Impulsador con mayor carga: ${liderImpulsador.label}`,
-      detail: `${formatNumber(liderImpulsador.conteo)} activaciones (${formatPercent(liderImpulsador.porcentaje)}).`,
-    })
-  }
-
-  return data.slice(0, 6)
-})
+function anchoBarra(value, values) {
+  const max = Math.max(1, ...values.map((item) => item.value))
+  return `${Math.max(3, (value / max) * 100)}%`
+}
 </script>
 
 <template>
   <section class="view-page contenedor-metricas">
     <header class="view-header">
       <p class="view-kicker">Inteligencia Operativa</p>
-      <h1 class="view-title">Metricas de Activaciones</h1>
-      <p class="view-description">
-        Vista ejecutiva para medir conversion, calidad de ejecucion y concentracion operativa.
-      </p>
-      <div class="meta-row">
-        <span class="meta-pill">
-          {{ loading ? 'Sincronizando...' : `${totalActivaciones} activaciones filtradas` }}
-        </span>
-        <span v-if="!loading" class="meta-pill">Rango: {{ rangoFechas }}</span>
-      </div>
+      <h1 class="view-title">Dashboard de Activaciones</h1>
+      <p class="view-description">Consulta volumen, cobertura, desempeño comercial e incidencias desde una sola vista.</p>
+      <div class="meta-row"><span class="meta-pill">{{ loading ? 'Sincronizando...' : `${formatNumber(dashboard.kpis.total)} activaciones filtradas` }}</span></div>
     </header>
 
     <div class="panel-card metrics-panel">
       <div class="toolbar-line">
-        <h2 class="subtitulo subtitulo-inline">Vista Ejecutiva</h2>
-        <div class="toolbar-actions">
-          <span class="meta-pill">{{ formatNumber(activaciones.length) }} totales</span>
-          <button class="boton" :disabled="!hayFiltrosActivos" @click="limpiarFiltros">
-            Limpiar filtros
-          </button>
-        </div>
+        <div><h2 class="subtitulo subtitulo-inline">Dashboard v2</h2><p class="section-caption">Todos los indicadores responden al mismo conjunto de filtros.</p></div>
+        <div class="toolbar-actions"><span class="meta-pill">{{ formatNumber(activaciones.length) }} totales</span><button class="boton" :disabled="!hayFiltros" @click="limpiarFiltros">Limpiar filtros</button></div>
       </div>
 
-      <div class="filtros filtros-grid filtros-metricas">
-        <label>
-          <span class="field-label">Fecha</span>
-          <input type="date" v-model="filtroFecha" class="input-texto" />
-        </label>
-        <label>
-          <span class="field-label">Impulsador</span>
-          <input
-            type="text"
-            v-model="filtroImpulsador"
-            placeholder="Buscar impulsador"
-            class="input-texto"
-          />
-        </label>
-        <label>
-          <span class="field-label">Plaza</span>
-          <select v-model="filtroPlaza" class="input-texto">
-            <option value="">Todas</option>
-            <option v-for="plaza in plazasDisponibles" :key="plaza" :value="plaza">
-              {{ plaza }}
-            </option>
-          </select>
-        </label>
-        <label>
-          <span class="field-label">Distrito</span>
-          <select v-model="filtroDistrito" class="input-texto">
-            <option value="">Todos</option>
-            <option v-for="distrito in distritosDisponibles" :key="distrito" :value="distrito">
-              {{ distrito }}
-            </option>
-          </select>
-        </label>
-        <label>
-          <span class="field-label">Tipo Activacion</span>
-          <select v-model="filtroTipo" class="input-texto">
-            <option value="">Todos</option>
-            <option v-for="tipo in tiposDisponibles" :key="tipo" :value="tipo">
-              {{ tipo }}
-            </option>
-          </select>
-        </label>
+      <div class="filtros filtros-grid filtros-metricas-v2">
+        <label><span class="field-label">Fecha desde</span><input v-model="filtroDesde" type="date" class="input-texto"></label>
+        <label><span class="field-label">Fecha hasta</span><input v-model="filtroHasta" type="date" class="input-texto"></label>
+        <label><span class="field-label">Plaza</span><select v-model="filtroPlaza" class="input-texto"><option value="">Todas</option><option v-for="plaza in opciones.plazas" :key="plaza">{{ plaza }}</option></select></label>
+        <label><span class="field-label">Activador</span><input v-model="filtroActivador" class="input-texto" list="activadores-dashboard" placeholder="Buscar activador"><datalist id="activadores-dashboard"><option v-for="item in opciones.activadores" :key="item" :value="item"></option></datalist></label>
+        <label><span class="field-label">Tipo de activacion</span><select v-model="filtroTipo" class="input-texto"><option value="">Todos</option><option v-for="tipo in opciones.tipos" :key="tipo">{{ tipo }}</option></select></label>
+        <label v-if="opciones.lideres.length"><span class="field-label">Lider</span><select v-model="filtroLider" class="input-texto"><option value="">Todos</option><option v-for="lider in opciones.lideres" :key="lider">{{ lider }}</option></select></label>
       </div>
 
-      <p v-if="loading">Cargando datos...</p>
+      <p v-if="loading" class="panel-empty">Cargando indicadores...</p>
       <p v-else-if="errorMsg" class="mensaje-error">{{ errorMsg }}</p>
-      <p v-else-if="totalActivaciones === 0" class="panel-empty">
-        No hay datos para los filtros seleccionados.
-      </p>
+      <p v-else-if="!dashboard.rows.length" class="panel-empty">No hay activaciones para los filtros seleccionados.</p>
 
       <div v-else class="metrics-dashboard">
-        <div class="kpi-grid">
-          <article v-for="card in tarjetasResumen" :key="card.key" class="kpi-card">
-            <p class="kpi-label">{{ card.label }}</p>
-            <p class="kpi-value">{{ card.value }}</p>
-            <p class="kpi-note">{{ card.note }}</p>
-          </article>
+        <div class="kpi-grid kpi-grid-v2">
+          <article v-for="card in tarjetas" :key="card.key" class="kpi-card" :title="card.note"><p class="kpi-label">{{ card.label }}</p><p class="kpi-value">{{ formatNumber(card.value) }}</p><p class="kpi-note">{{ card.note }}</p></article>
         </div>
 
-        <div class="metrics-columns">
-          <article class="analytics-card">
-            <h3 class="analytics-title">Embudo Operacional</h3>
-            <p class="analytics-subtitle">
-              Conversion secuencial considerando todos los pasos previos.
-            </p>
+        <div class="dashboard-charts-grid">
+          <article class="analytics-card chart-card-wide"><h3 class="analytics-title">Activaciones por dia</h3><p class="analytics-subtitle">Evolucion cronologica del volumen filtrado.</p><div class="dashboard-bars"><div v-for="item in dashboard.porDia" :key="item.label" class="dashboard-bar-row" :title="`${formatDate(item.label)}: ${formatNumber(item.value)} activaciones`"><span>{{ formatDate(item.label) }}</span><div class="metric-track"><div class="metric-fill" :style="{ width: anchoBarra(item.value, dashboard.porDia) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div></article>
 
-            <div class="metric-list">
-              <div v-for="paso in embudoOperacional" :key="paso.key" class="metric-row">
-                <div class="metric-row-head">
-                  <strong>{{ paso.label }}</strong>
-                  <span>{{ formatNumber(paso.conteo) }} | {{ formatPercent(paso.porcentajeTotal) }}</span>
-                </div>
-                <div class="metric-track">
-                  <div class="metric-fill" :style="{ width: `${paso.porcentajeTotal}%` }"></div>
-                </div>
-                <p class="metric-row-meta">
-                  Desde etapa anterior: {{ formatPercent(paso.porcentajePasoAnterior) }}
-                </p>
-              </div>
-            </div>
-          </article>
+          <article class="analytics-card"><h3 class="analytics-title">Activaciones por plaza</h3><p class="analytics-subtitle">Distribucion de cobertura.</p><div class="dashboard-bars"><div v-for="item in dashboard.porPlaza" :key="item.label" class="dashboard-bar-row" :title="`${item.label}: ${formatNumber(item.value)}`"><span>{{ item.label }}</span><div class="metric-track"><div class="metric-fill metric-fill-soft" :style="{ width: anchoBarra(item.value, dashboard.porPlaza) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div></article>
 
-          <article class="analytics-card">
-            <h3 class="analytics-title">Estado de Ejecucion</h3>
-            <p class="analytics-subtitle">Participacion de cada indicador sobre el total filtrado.</p>
+          <article class="analytics-card"><h3 class="analytics-title">Top 10 activadores</h3><p class="analytics-subtitle">Mayor cantidad de registros.</p><div class="dashboard-bars"><div v-for="item in dashboard.porActivador" :key="item.label" class="dashboard-bar-row" :title="`${item.label}: ${formatNumber(item.value)}`"><span>{{ item.label }}</span><div class="metric-track"><div class="metric-fill" :style="{ width: anchoBarra(item.value, dashboard.porActivador) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div></article>
 
-            <div class="metric-list">
-              <div v-for="item in metricasEstado" :key="item.key" class="metric-row">
-                <div class="metric-row-head">
-                  <strong>{{ item.label }}</strong>
-                  <span>{{ formatNumber(item.conteo) }} | {{ formatPercent(item.porcentaje) }}</span>
-                </div>
-                <div class="metric-track">
-                  <div
-                    class="metric-fill"
-                    :class="{
-                      'metric-fill-danger': item.key === 'hubo_error',
-                      'metric-fill-soft': item.key === 'respaldo',
-                    }"
-                    :style="{ width: `${item.porcentaje}%` }"
-                  ></div>
-                </div>
-              </div>
-            </div>
-          </article>
+          <article class="analytics-card"><h3 class="analytics-title">Tipos de activacion</h3><p class="analytics-subtitle">Composicion del trabajo realizado.</p><div class="dashboard-bars"><div v-for="item in dashboard.porTipo" :key="item.label" class="dashboard-bar-row" :title="`${item.label}: ${formatNumber(item.value)}`"><span>{{ item.label }}</span><div class="metric-track"><div class="metric-fill metric-fill-soft" :style="{ width: anchoBarra(item.value, dashboard.porTipo) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div></article>
+
+          <article class="analytics-card"><h3 class="analytics-title">Errores por tipo</h3><p class="analytics-subtitle">Incidencias agrupadas por clasificacion.</p><div v-if="dashboard.erroresPorTipo.length" class="dashboard-bars"><div v-for="item in dashboard.erroresPorTipo" :key="item.label" class="dashboard-bar-row" :title="`${item.label}: ${formatNumber(item.value)}`"><span>{{ item.label }}</span><div class="metric-track"><div class="metric-fill metric-fill-danger" :style="{ width: anchoBarra(item.value, dashboard.erroresPorTipo) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div><p v-else class="analytics-empty">No hay errores en el corte actual.</p></article>
         </div>
-
-        <div class="metrics-columns">
-          <article class="analytics-card">
-            <h3 class="analytics-title">Top Activadores</h3>
-            <div v-if="topActivadores.length" class="ranking-list">
-              <div v-for="item in topActivadores" :key="item.label" class="ranking-row">
-                <div class="ranking-head">
-                  <strong>{{ item.label }}</strong>
-                  <span>{{ formatNumber(item.conteo) }} | {{ formatPercent(item.porcentaje) }}</span>
-                </div>
-                <div class="metric-track">
-                  <div class="metric-fill" :style="{ width: `${item.porcentaje}%` }"></div>
-                </div>
-              </div>
-            </div>
-            <p v-else class="analytics-empty">Sin datos en este corte.</p>
-          </article>
-
-          <article class="analytics-card">
-            <h3 class="analytics-title">Tipos de Activacion</h3>
-            <div v-if="topTipos.length" class="ranking-list">
-              <div v-for="item in topTipos" :key="item.label" class="ranking-row">
-                <div class="ranking-head">
-                  <strong>{{ item.label }}</strong>
-                  <span>{{ formatNumber(item.conteo) }} | {{ formatPercent(item.porcentaje) }}</span>
-                </div>
-                <div class="metric-track">
-                  <div class="metric-fill metric-fill-soft" :style="{ width: `${item.porcentaje}%` }"></div>
-                </div>
-              </div>
-            </div>
-            <p v-else class="analytics-empty">Sin datos en este corte.</p>
-          </article>
-        </div>
-
-        <article class="analytics-card analytics-card-wide">
-          <div class="toolbar-line">
-            <h3 class="analytics-title">Plazas y Distritos (Grafico Unico)</h3>
-            <span class="meta-pill">
-              {{ plazaDistritoGrafico.plazas.length }} plazas ·
-              {{ formatNumber(distritosActivos) }} distritos
-            </span>
-          </div>
-          <p class="analytics-subtitle">
-            Cada grupo inicia con su plaza y debajo aparecen sus distritos. El color identifica la
-            plaza a la que pertenece cada distrito.
-          </p>
-
-          <div v-if="plazaDistritoGrafico.rows.length" class="hierarchy-chart">
-            <div class="hierarchy-legend">
-              <span
-                v-for="plaza in plazaDistritoGrafico.plazas"
-                :key="`legend-${plaza.name}`"
-                class="hierarchy-legend-item"
-              >
-                <span
-                  class="hierarchy-legend-dot"
-                  :style="{ backgroundColor: plaza.color }"
-                ></span>
-                <span>{{ plaza.name }} ({{ formatNumber(plaza.total) }})</span>
-              </span>
-            </div>
-
-            <div class="hierarchy-header">
-              <span>Estructura</span>
-              <span>Volumen Relativo</span>
-              <span>Valor</span>
-            </div>
-
-            <div class="hierarchy-body">
-              <div
-                v-for="row in plazaDistritoGrafico.rows"
-                :key="row.id"
-                class="hierarchy-row"
-                :class="{
-                  'hierarchy-row-plaza': row.type === 'plaza',
-                  'hierarchy-row-distrito': row.type === 'distrito',
-                  'hierarchy-row-group-start': row.groupStart,
-                }"
-              >
-                <div class="hierarchy-label">
-                  <span
-                    class="hierarchy-color"
-                    :style="{ backgroundColor: row.color }"
-                  ></span>
-                  <span class="hierarchy-main" :title="row.label">{{ row.label }}</span>
-                  <span
-                    v-if="row.type === 'distrito'"
-                    class="hierarchy-parent"
-                    :title="row.plaza"
-                  >
-                    {{ row.plaza }}
-                  </span>
-                </div>
-
-                <div class="hierarchy-track">
-                  <div
-                    class="hierarchy-bar"
-                    :style="{ width: `${row.ratio}%`, backgroundColor: row.barColor }"
-                  ></div>
-                </div>
-
-                <div class="hierarchy-value" :title="row.valueDetail">
-                  {{ row.valueText }}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <p v-else class="analytics-empty">Sin datos para plazas y distritos.</p>
-        </article>
-
-        <article class="analytics-card analytics-card-wide">
-          <h3 class="analytics-title">Hallazgos Automaticos</h3>
-          <p class="analytics-subtitle">Lectura rapida para decisiones de coordinacion.</p>
-          <div class="insights-grid">
-            <article
-              v-for="hallazgo in hallazgos"
-              :key="hallazgo.title"
-              class="insight-card"
-              :class="`insight-${hallazgo.tone}`"
-            >
-              <p class="insight-title">{{ hallazgo.title }}</p>
-              <p class="insight-text">{{ hallazgo.detail }}</p>
-            </article>
-          </div>
-        </article>
       </div>
     </div>
   </section>
