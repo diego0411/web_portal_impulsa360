@@ -22,6 +22,10 @@ const routes = [
     component: () => import('./components/Usuarios.vue'),
   },
   {
+    path: '/equipos',
+    component: () => import('./components/Equipos.vue'),
+  },
+  {
     path: '/notificaciones',
     component: () => import('./components/Notificaciones.vue'),
   },
@@ -42,6 +46,6 @@ router.beforeEach(async (to) => {
   const { session, profile } = useAuth()
   if (to.meta.public) return profile.value ? '/activaciones' : true
   if (!session.value || !profile.value) return { path: '/login', query: { redirect: to.fullPath } }
-  if (profile.value.rol === 'lider' && ['/usuarios', '/notificaciones', '/capacidad'].includes(to.path)) return '/activaciones'
+  if (profile.value.rol === 'lider' && ['/usuarios', '/equipos', '/notificaciones', '/capacidad'].includes(to.path)) return '/activaciones'
   return true
 })

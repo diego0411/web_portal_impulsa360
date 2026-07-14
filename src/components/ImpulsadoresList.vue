@@ -11,6 +11,15 @@ const errorMsg = ref(null)
 const filtroNombre = ref('')
 const filtroEmail = ref('')
 const filtroPlaza = ref('')
+const filtroEquipo = ref('')
+const filtroLider = ref('')
+const filtroFacturador = ref('')
+const filtroEstado = ref('')
+
+const plazas = computed(() => [...new Set(impulsadores.value.map((i) => i.plaza_nombre || i.plaza_base || i.plaza).filter(Boolean))].sort())
+const equipos = computed(() => [...new Map(impulsadores.value.filter((i) => i.equipo_numero).map((i) => [String(i.equipo_numero), `#${i.equipo_numero} - ${i.equipo_nombre || 'Equipo'}`])).entries()])
+const lideres = computed(() => [...new Map(impulsadores.value.filter((i) => i.lider_id).map((i) => [i.lider_id, nombreLider(i)])).entries()])
+const facturadores = computed(() => [...new Map(impulsadores.value.filter((i) => i.facturador_id).map((i) => [i.facturador_id, i.facturador_nombre || i.facturador_codigo || 'Facturador'])).entries()])
 
 function nombreLider(impulsador) {
   if (!impulsador.lider_id) return '-'
@@ -21,9 +30,13 @@ const impulsadoresFiltrados = computed(() => {
   return impulsadores.value.filter((impulsador) => {
     const coincideNombre = containsNormalized(impulsador.nombre, filtroNombre.value)
     const coincideEmail = containsNormalized(impulsador.email, filtroEmail.value)
-    const coincidePlaza = containsNormalized(impulsador.plaza, filtroPlaza.value)
+    const coincidePlaza = !filtroPlaza.value || (impulsador.plaza_nombre || impulsador.plaza_base || impulsador.plaza) === filtroPlaza.value
+    const coincideEquipo = !filtroEquipo.value || String(impulsador.equipo_numero ?? '') === filtroEquipo.value
+    const coincideLider = !filtroLider.value || impulsador.lider_id === filtroLider.value
+    const coincideFacturador = !filtroFacturador.value || impulsador.facturador_id === filtroFacturador.value
+    const coincideEstado = !filtroEstado.value || (impulsador.estado || 'activo') === filtroEstado.value
 
-    return coincideNombre && coincideEmail && coincidePlaza
+    return (impulsador.rol ?? 'activador') === 'activador' && coincideNombre && coincideEmail && coincidePlaza && coincideEquipo && coincideLider && coincideFacturador && coincideEstado
   })
 })
 
@@ -77,13 +90,12 @@ onMounted(async () => {
       </label>
       <label>
         <span class="field-label">Plaza</span>
-        <input
-          v-model="filtroPlaza"
-          type="text"
-          placeholder="Buscar por plaza"
-          class="input-texto"
-        />
+        <select v-model="filtroPlaza" class="input-texto"><option value="">Todas</option><option v-for="plaza in plazas" :key="plaza" :value="plaza">{{ plaza }}</option></select>
       </label>
+      <label><span class="field-label">Equipo</span><select v-model="filtroEquipo" class="input-texto"><option value="">Todos</option><option v-for="[id, nombre] in equipos" :key="id" :value="id">{{ nombre }}</option></select></label>
+      <label><span class="field-label">Lider</span><select v-model="filtroLider" class="input-texto"><option value="">Todos</option><option v-for="[id, nombre] in lideres" :key="id" :value="id">{{ nombre }}</option></select></label>
+      <label><span class="field-label">Facturador</span><select v-model="filtroFacturador" class="input-texto"><option value="">Todos</option><option v-for="[id, nombre] in facturadores" :key="id" :value="id">{{ nombre }}</option></select></label>
+      <label><span class="field-label">Estado</span><select v-model="filtroEstado" class="input-texto"><option value="">Todos</option><option value="activo">Activo</option><option value="inhabilitado">Inhabilitado</option></select></label>
     </div>
 
     <div class="toolbar-line">
@@ -103,11 +115,12 @@ onMounted(async () => {
             <th>#</th>
             <th>Nombre</th>
             <th>Email</th>
-            <th>Plaza</th>
-            <th>Rol</th>
+            <th>Plaza base</th>
+            <th>Facturador</th>
             <th>Estado</th>
             <th>Lider</th>
             <th>Equipo</th>
+            <th>Plaza temporal</th>
           </tr>
         </thead>
         <tbody>
@@ -119,15 +132,13 @@ onMounted(async () => {
             <td>{{ impulsador.nombre }}</td>
             <td>{{ impulsador.email }}</td>
             <td>{{ impulsador.plaza_nombre || impulsador.plaza_base || impulsador.plaza }}</td>
-            <td>{{ impulsador.rol || '-' }}</td>
+            <td>{{ impulsador.facturador_nombre || impulsador.facturador_codigo || '-' }}</td>
             <td><span class="scope-pill" :class="impulsador.estado === 'inhabilitado' ? 'scope-pill-user' : 'scope-pill-all'">{{ impulsador.estado || 'Sin estado' }}</span></td>
             <td>{{ nombreLider(impulsador) }}</td>
             <td>
-              <span>{{ impulsador.equipo_numero ? `#${impulsador.equipo_numero}` : '-' }}</span>
-              <span v-if="impulsador.plaza_temporal_activa" class="scope-pill scope-pill-user">
-                Temporal: {{ impulsador.plaza_efectiva }}
-              </span>
+              <span>{{ impulsador.equipo_numero ? `#${impulsador.equipo_numero} - ${impulsador.equipo_nombre || 'Equipo'}` : '-' }}</span>
             </td>
+            <td><span v-if="impulsador.plaza_temporal_activa" class="scope-pill scope-pill-user">{{ impulsador.plaza_efectiva }}</span><span v-else>-</span></td>
           </tr>
         </tbody>
       </table>

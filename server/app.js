@@ -27,7 +27,7 @@ const ACTIVATION_EDITABLE_FIELDS = new Set([
   'plaza_temporal',
 ])
 const ALLOWED_STORE_SIZES = new Set(['Pequeña', 'Mediana', 'Grande'])
-const ALLOWED_USER_ROLES = new Set(['activador', 'lider', 'administrador'])
+const ALLOWED_USER_ROLES = new Set(['activador', 'lider', 'facturador', 'administrador'])
 const ALLOWED_USER_STATES = new Set(['activo', 'inhabilitado'])
 const REQUIRED_ENV = [
   'SUPABASE_URL',
@@ -77,6 +77,13 @@ function isValidEmail(value) {
 
 function isStrongPassword(value) {
   return typeof value === 'string' && value.length >= 10 && /[A-Z]/.test(value) && /[a-z]/.test(value) && /[0-9]/.test(value) && /[^A-Za-z0-9]/.test(value)
+}
+
+function isMissingOrganizationSchema(error) {
+  const code = String(error?.code ?? '')
+  const message = String(error?.message ?? '').toLowerCase()
+  return ['42P01', 'PGRST200', 'PGRST202', 'PGRST204', 'PGRST205'].includes(code) ||
+    message.includes('schema cache') || message.includes('does not exist') || message.includes('could not find the table')
 }
 
 export function resolvePort(rawValue) {
@@ -724,6 +731,55 @@ export function createAdminApiApp({ env = process.env } = {}) {
     return concurrent?.id ?? null
   }
 
+  async function loadOrganizationOptions() {
+    const [plazasResult, teamsResult, billersResult] = await Promise.all([
+      adminSupabase.from('plazas').select('id,nombre,nombre_normalizado,activa').eq('activa', true).order('nombre'),
+      adminSupabase.from('equipos').select('id,numero,nombre,facturador_id,plaza_id,lider_actual_id,activo').order('numero'),
+      adminSupabase.from('facturadores').select('id,codigo,nombre,activo').eq('activo', true).order('nombre'),
+    ])
+    const firstError = plazasResult.error || teamsResult.error || billersResult.error
+    if (firstError) {
+      if (isMissingOrganizationSchema(firstError)) {
+        return { available: false, message: 'El modelo organizacional aun no esta habilitado; se mantiene el esquema anterior.', plazas: [], equipos: [], facturadores: [] }
+      }
+      throw firstError
+    }
+    return {
+      available: true,
+      message: null,
+      plazas: plazasResult.data ?? [],
+      equipos: teamsResult.data ?? [],
+      facturadores: billersResult.data ?? [],
+    }
+  }
+
+  async function resolveSelectedTeam(teamId) {
+    if (!teamId) return { available: true, team: null }
+    const { data, error } = await adminSupabase.from('equipos')
+      .select('id,numero,nombre,facturador_id,plaza_id,lider_actual_id,activo,plazas!inner(nombre)')
+      .eq('id', teamId).eq('activo', true).maybeSingle()
+    if (error) {
+      if (isMissingOrganizationSchema(error)) return { available: false, team: null }
+      throw error
+    }
+    return { available: true, team: data ?? null }
+  }
+
+  async function syncLeaderTeams(leaderId, teamIds) {
+    const normalizedIds = [...new Set((teamIds ?? []).map(normalizeText).filter(Boolean))]
+    const { error } = await adminSupabase.rpc('asignar_equipos_lider', {
+      p_lider_id: leaderId,
+      p_equipo_ids: normalizedIds,
+      p_inicio: new Date().toISOString(),
+      p_motivo: 'Actualizacion administrativa de usuario',
+    })
+    if (error) {
+      if (isMissingOrganizationSchema(error)) return { available: false }
+      throw error
+    }
+    return { available: true }
+  }
+
   const app = express()
   app.set('trust proxy', true)
 
@@ -902,18 +958,60 @@ export function createAdminApiApp({ env = process.env } = {}) {
     asyncRoute(async (req, res) => {
       const rawEmail = req.body?.email
       const rawPassword = req.body?.password
+      const requestedTeamId = normalizeNullableText(req.body?.equipo_id)
+      const requestedBillerId = normalizeNullableText(req.body?.facturador_id)
+      const requestedTeamIds = Array.isArray(req.body?.equipo_ids) ? req.body.equipo_ids : []
       const rawNombre = req.body?.nombre
       const rawPlaza = req.body?.plaza
       const rol = normalizeText(req.body?.rol) || 'activador'
       const estado = normalizeText(req.body?.estado) || 'activo'
-      const liderId = rol === 'activador' ? normalizeNullableText(req.body?.lider_id) : null
+      let liderId = rol === 'activador' ? normalizeNullableText(req.body?.lider_id) : null
       const motivoInhabilitacion = normalizeNullableText(req.body?.motivo_inhabilitacion)
 
       const email = normalizeEmail(rawEmail)
       const password = typeof rawPassword === 'string' ? rawPassword : ''
       const nombre = normalizeText(rawNombre)
-      const plaza = normalizeNullableText(rawPlaza)
-      const teamId = rol === 'activador' ? await resolveTeamIdForLeader(liderId, plaza) : null
+      let plaza = normalizeNullableText(rawPlaza)
+      let teamId = null
+
+      if (rol === 'activador' && requestedTeamId) {
+        const selected = await resolveSelectedTeam(requestedTeamId)
+        if (selected.available && !selected.team) {
+          jsonError(res, 400, 'El equipo seleccionado no existe o esta inactivo.')
+          return
+        }
+        if (selected.available) {
+          teamId = selected.team.id
+          liderId = selected.team.lider_actual_id ?? null
+          plaza = selected.team.plazas?.nombre ?? plaza
+        }
+      }
+      if (rol === 'activador' && !teamId) teamId = await resolveTeamIdForLeader(liderId, plaza)
+
+      let leaderOrganizationAvailable = false
+      if (rol === 'lider') {
+        const options = await loadOrganizationOptions()
+        leaderOrganizationAvailable = options.available
+        if (options.available) {
+          if (!requestedBillerId || !requestedTeamIds.length) {
+            jsonError(res, 400, 'El facturador y al menos un equipo son obligatorios para un lider.')
+            return
+          }
+          const selectedTeams = options.equipos.filter((team) => requestedTeamIds.includes(team.id))
+          if (selectedTeams.length !== new Set(requestedTeamIds).size) {
+            jsonError(res, 400, 'Uno o mas equipos seleccionados no existen o estan inactivos.')
+            return
+          }
+          if (requestedBillerId && selectedTeams.some((team) => team.facturador_id !== requestedBillerId)) {
+            jsonError(res, 400, 'Todos los equipos deben pertenecer al facturador seleccionado.')
+            return
+          }
+          if (new Set(selectedTeams.map((team) => team.plaza_id)).size !== selectedTeams.length) {
+            jsonError(res, 409, 'Un lider no puede tener dos equipos activos en la misma plaza.')
+            return
+          }
+        }
+      }
 
       if (!email || !password || !nombre) {
         jsonError(res, 400, 'email, password y nombre son obligatorios.')
@@ -990,6 +1088,17 @@ export function createAdminApiApp({ env = process.env } = {}) {
         return
       }
 
+      if (rol === 'lider' && leaderOrganizationAvailable) {
+        try {
+          await syncLeaderTeams(created.user.id, requestedTeamIds)
+        } catch (error) {
+          await adminSupabase.from('activadores').delete().eq('usuario_id', created.user.id)
+          await adminSupabase.auth.admin.deleteUser(created.user.id)
+          jsonError(res, 409, 'No se pudieron asignar los equipos al lider.', error?.message)
+          return
+        }
+      }
+
       res.status(201).json({ user: insertedUser })
     })
   )
@@ -1025,6 +1134,109 @@ export function createAdminApiApp({ env = process.env } = {}) {
     })
   )
 
+  app.get(
+    '/admin/organization-options',
+    asyncRoute(async (_req, res) => {
+      try {
+        res.json(await loadOrganizationOptions())
+      } catch (error) {
+        jsonError(res, 500, 'No se pudo cargar la estructura organizacional.', error?.message)
+      }
+    })
+  )
+
+  app.get('/admin/teams', asyncRoute(async (_req, res) => {
+    const options = await loadOrganizationOptions()
+    if (!options.available) { res.json(options); return }
+    const { data: members, error } = await adminSupabase.from('activadores')
+      .select('usuario_id,equipo_id').eq('rol', 'activador')
+    if (error && !isMissingOrganizationSchema(error)) {
+      jsonError(res, 500, 'No se pudo contar los integrantes.', error.message)
+      return
+    }
+    const memberCount = new Map()
+    for (const member of members ?? []) memberCount.set(member.equipo_id, (memberCount.get(member.equipo_id) ?? 0) + 1)
+    res.json({ ...options, equipos: options.equipos.map((team) => ({ ...team, integrantes: memberCount.get(team.id) ?? 0 })) })
+  }))
+
+  app.get('/admin/teams/:teamId', asyncRoute(async (req, res) => {
+    const teamId = normalizeText(req.params.teamId)
+    const [{ data: members, error: membersError }, { data: history, error: historyError }] = await Promise.all([
+      adminSupabase.from('activadores').select('usuario_id,nombre,email,estado,plaza,plaza_base').eq('equipo_id', teamId).eq('rol', 'activador').order('nombre'),
+      adminSupabase.from('equipo_lider_historial').select('id,lider_id,inicio,fin,motivo').eq('equipo_id', teamId).order('inicio', { ascending: false }),
+    ])
+    const schemaError = membersError || historyError
+    if (schemaError) {
+      if (isMissingOrganizationSchema(schemaError)) {
+        res.json({ available: false, message: 'El detalle de equipos estara disponible despues de habilitar el modelo organizacional.', integrantes: [], historial: [] })
+        return
+      }
+      jsonError(res, 500, 'No se pudo cargar el detalle del equipo.', schemaError.message)
+      return
+    }
+    res.json({ available: true, integrantes: members ?? [], historial: history ?? [] })
+  }))
+
+  app.post('/admin/teams', asyncRoute(async (req, res) => {
+    const nombre = normalizeText(req.body?.nombre)
+    const plazaId = normalizeNullableText(req.body?.plaza_id)
+    const facturadorId = normalizeNullableText(req.body?.facturador_id)
+    const liderId = normalizeNullableText(req.body?.lider_id)
+    if (!nombre || !plazaId || !facturadorId) {
+      jsonError(res, 400, 'Nombre, plaza y facturador son obligatorios.')
+      return
+    }
+    if (liderId) {
+      const { data: conflict, error: conflictError } = await adminSupabase.from('equipos')
+        .select('id').eq('lider_actual_id', liderId).eq('plaza_id', plazaId).eq('activo', true).limit(1)
+      if (conflictError && isMissingOrganizationSchema(conflictError)) {
+        jsonError(res, 409, 'La gestion de equipos estara disponible cuando se habilite el modelo organizacional.')
+        return
+      }
+      if (conflictError) { jsonError(res, 500, 'No se pudo validar el equipo.', conflictError.message); return }
+      if (conflict?.length) { jsonError(res, 409, 'El lider ya dirige un equipo activo en esta plaza.'); return }
+    }
+    const { data: team, error } = await adminSupabase.from('equipos').insert({
+      nombre, plaza_id: plazaId, facturador_id: facturadorId, lider_actual_id: null, activo: true,
+    }).select('*').single()
+    if (error) {
+      if (isMissingOrganizationSchema(error)) { jsonError(res, 409, 'La gestion de equipos estara disponible cuando se habilite el modelo organizacional.'); return }
+      jsonError(res, 500, 'No se pudo crear el equipo.', error.message); return
+    }
+    if (liderId) {
+      const { error: leaderError } = await adminSupabase.rpc('asignar_lider_equipo', { p_equipo_id: team.id, p_lider_id: liderId, p_motivo: 'Creacion administrativa de equipo' })
+      if (leaderError) {
+        await adminSupabase.from('equipos').delete().eq('id', team.id)
+        jsonError(res, 409, 'No se pudo asignar el lider.', leaderError.message)
+        return
+      }
+    }
+    res.status(201).json({ team: { ...team, lider_actual_id: liderId } })
+  }))
+
+  app.patch('/admin/teams/:teamId', asyncRoute(async (req, res) => {
+    const teamId = normalizeText(req.params.teamId)
+    const nombre = normalizeText(req.body?.nombre)
+    const facturadorId = normalizeNullableText(req.body?.facturador_id)
+    const liderId = normalizeNullableText(req.body?.lider_id)
+    const activo = req.body?.activo
+    if (!teamId || !nombre || !facturadorId || typeof activo !== 'boolean') {
+      jsonError(res, 400, 'Nombre, facturador y estado son obligatorios.')
+      return
+    }
+    const { error } = await adminSupabase.rpc('actualizar_equipo_organizacion', {
+      p_equipo_id: teamId, p_nombre: nombre, p_facturador_id: facturadorId,
+      p_lider_id: liderId, p_activo: activo, p_inicio: new Date().toISOString(),
+      p_motivo: 'Edicion administrativa de equipo',
+    })
+    if (error) {
+      if (isMissingOrganizationSchema(error)) { jsonError(res, 409, 'La gestion de equipos estara disponible cuando se habilite el modelo organizacional.'); return }
+      jsonError(res, error.code === '23P01' || error.code === '23505' ? 409 : 500, 'No se pudo actualizar el equipo.', error.message)
+      return
+    }
+    res.json({ ok: true })
+  }))
+
   app.post(
     '/admin/users/:userId/temporary-plaza',
     asyncRoute(async (req, res) => {
@@ -1038,6 +1250,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
         jsonError(res, 400, 'activador, plaza temporal, inicio, fin y motivo validos son obligatorios.')
         return
       }
+
       if (!authorizedBy) {
         jsonError(res, 400, 'La asignacion temporal requiere una sesion administrativa identificable.')
         return
@@ -1061,6 +1274,10 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const { data, error } = await adminSupabase.from('activador_plaza_temporal')
         .insert(temporaryPayload).select('*').single()
       if (error) {
+        if (isMissingOrganizationSchema(error)) {
+          jsonError(res, 409, 'La plaza temporal estara disponible cuando se habilite el modelo organizacional.')
+          return
+        }
         jsonError(res, error.code === '23P01' ? 409 : 500,
           error.code === '23P01' ? 'El periodo se solapa con otra plaza temporal.' : 'No se pudo asignar la plaza temporal.', error.message)
         return
@@ -1083,6 +1300,10 @@ export function createAdminApiApp({ env = process.env } = {}) {
         cancelado_por: authorizedBy,
       }).eq('activador_id', req.params.userId).is('cancelado_at', null).lte('inicio', now).gt('fin', now)
       if (error) {
+        if (isMissingOrganizationSchema(error)) {
+          jsonError(res, 409, 'No hay una asignacion temporal administrable en el esquema actual.')
+          return
+        }
         jsonError(res, 500, 'No se pudo cancelar la plaza temporal.', error.message)
         return
       }
@@ -1100,11 +1321,14 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const rawEmail = req.body?.email
       const rawEmailConfirm = req.body?.emailConfirm
       const rawPassword = req.body?.password
+      const requestedTeamId = normalizeNullableText(req.body?.equipo_id)
+      const requestedBillerId = normalizeNullableText(req.body?.facturador_id)
+      const requestedTeamIds = Array.isArray(req.body?.equipo_ids) ? req.body.equipo_ids : []
       const requestedRol = normalizeText(req.body?.rol)
       const requestedEstado = normalizeText(req.body?.estado)
 
       const nombre = normalizeText(rawNombre)
-      const plaza = normalizeNullableText(rawPlaza)
+      let plaza = normalizeNullableText(rawPlaza)
       const shouldUpdateEmail = typeof rawEmail === 'string'
       const email = shouldUpdateEmail ? normalizeEmail(rawEmail) : null
       const emailConfirm = rawEmailConfirm === true
@@ -1157,7 +1381,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
       const rol = requestedRol || previousRow.rol || 'activador'
       const estado = requestedEstado || previousRow.estado || 'activo'
-      const liderId = rol === 'activador'
+      let liderId = rol === 'activador'
         ? (req.body?.lider_id === undefined ? previousRow.lider_id : normalizeNullableText(req.body.lider_id))
         : null
       const motivoInhabilitacion = req.body?.motivo_inhabilitacion === undefined
@@ -1169,7 +1393,21 @@ export function createAdminApiApp({ env = process.env } = {}) {
         return
       }
 
-      if (liderId) {
+      let teamId = null
+      if (rol === 'activador' && requestedTeamId) {
+        const selected = await resolveSelectedTeam(requestedTeamId)
+        if (selected.available && !selected.team) {
+          jsonError(res, 400, 'El equipo seleccionado no existe o esta inactivo.')
+          return
+        }
+        if (selected.available) {
+          teamId = selected.team.id
+          liderId = selected.team.lider_actual_id ?? null
+          plaza = selected.team.plazas?.nombre ?? plaza
+        }
+      }
+
+      if (liderId && !teamId) {
         const { data: leader, error: leaderErr } = await adminSupabase
           .from('activadores')
           .select('usuario_id')
@@ -1180,6 +1418,27 @@ export function createAdminApiApp({ env = process.env } = {}) {
         if (leaderErr || !leader) {
           jsonError(res, 400, 'lider_id debe corresponder a un lider activo.', leaderErr?.message)
           return
+        }
+      }
+
+      let leaderOrganizationAvailable = false
+      const shouldSyncLeaderTeams = rol === 'lider' || previousRow.rol === 'lider'
+      if (shouldSyncLeaderTeams) {
+        const options = await loadOrganizationOptions()
+        leaderOrganizationAvailable = options.available
+        if (options.available) {
+          const effectiveTeamIds = rol === 'lider' ? requestedTeamIds : []
+          if (rol === 'lider' && (!requestedBillerId || !effectiveTeamIds.length)) {
+            jsonError(res, 400, 'El facturador y al menos un equipo son obligatorios para un lider.')
+            return
+          }
+          const selectedTeams = options.equipos.filter((team) => effectiveTeamIds.includes(team.id))
+          if (selectedTeams.length !== new Set(effectiveTeamIds).size ||
+            (requestedBillerId && selectedTeams.some((team) => team.facturador_id !== requestedBillerId)) ||
+            new Set(selectedTeams.map((team) => team.plaza_id)).size !== selectedTeams.length) {
+            jsonError(res, 409, 'La asignacion de equipos del lider no es valida.')
+            return
+          }
         }
       }
 
@@ -1194,10 +1453,13 @@ export function createAdminApiApp({ env = process.env } = {}) {
           : null,
         motivo_inhabilitacion: estado === 'inhabilitado' ? motivoInhabilitacion : null,
       }
-      const teamId = rol === 'activador' ? await resolveTeamIdForLeader(liderId, plaza) : null
+      if (rol === 'activador' && !teamId) teamId = await resolveTeamIdForLeader(liderId, plaza)
       if (teamId) {
         tableUpdatePayload.equipo_id = teamId
         tableUpdatePayload.plaza_base = plaza
+      }
+      if (rol !== 'activador' && Object.prototype.hasOwnProperty.call(previousRow, 'equipo_id')) {
+        tableUpdatePayload.equipo_id = null
       }
       if (shouldUpdateEmail) {
         tableUpdatePayload.email = email
@@ -1262,6 +1524,17 @@ export function createAdminApiApp({ env = process.env } = {}) {
           updateAuthErr.message
         )
         return
+      }
+
+      if (shouldSyncLeaderTeams) {
+        try {
+          if (leaderOrganizationAvailable) {
+            await syncLeaderTeams(userId, rol === 'lider' ? requestedTeamIds : [])
+          }
+        } catch (error) {
+          jsonError(res, 409, 'El usuario se actualizo, pero no se pudieron actualizar sus equipos.', error?.message)
+          return
+        }
       }
 
       res.json({
