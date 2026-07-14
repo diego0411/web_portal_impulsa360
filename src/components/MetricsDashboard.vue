@@ -11,7 +11,15 @@ const filtroPlaza = ref('')
 const filtroActivador = ref('')
 const filtroTipo = ref('')
 const filtroLider = ref('')
+const selectedKpi = ref('total')
 const numberFormatter = new Intl.NumberFormat('es-BO')
+const nowParts = Object.fromEntries(
+  new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date()).filter((part) => part.type !== 'literal').map((part) => [part.type, part.value])
+)
+const todayKey = `${nowParts.year}-${nowParts.month}-${nowParts.day}`
+const currentMonthKey = `${nowParts.year}-${nowParts.month}`
 
 onMounted(async () => {
   loading.value = true
@@ -37,6 +45,13 @@ function normalizado(value) {
 function fechaRegistro(item) {
   const value = texto(item.fecha_activacion) || texto(item.created_at)
   return value.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ''
+}
+
+function horaRegistro(item) {
+  if (!item.created_at) return 'Sin hora'
+  const date = new Date(item.created_at)
+  if (Number.isNaN(date.getTime())) return 'Sin hora'
+  return `${new Intl.DateTimeFormat('es-BO', { hour: '2-digit', hour12: false, timeZone: 'America/La_Paz' }).format(date)}:00`
 }
 
 function plazaRegistro(item) {
@@ -86,12 +101,7 @@ const opciones = computed(() => {
 
 const dashboard = computed(() => {
   const rows = []
-  const porDia = new Map()
-  const porPlaza = new Map()
-  const porActivador = new Map()
-  const porTipo = new Map()
-  const erroresPorTipo = new Map()
-  const kpis = { total: 0, tiendasBarrio: 0, comercios: 0, cashIn: 0, errores: 0, plazasTemporales: 0 }
+  const kpis = { total: 0, hoy: 0, mes: 0, cashIn: 0, errores: 0, plazasTemporales: 0 }
   const activadorQuery = normalizado(filtroActivador.value)
 
   for (const item of activaciones.value) {
@@ -109,40 +119,92 @@ const dashboard = computed(() => {
 
     rows.push(item)
     kpis.total += 1
-    const clasificacion = `${normalizado(item.tipo_activacion)} ${normalizado(item.tipo_comercio)}`
-    if (clasificacion.includes('tienda') && clasificacion.includes('barrio')) kpis.tiendasBarrio += 1
-    if (clasificacion.includes('comercio')) kpis.comercios += 1
+    if (fecha === todayKey) kpis.hoy += 1
+    if (fecha.startsWith(currentMonthKey)) kpis.mes += 1
     if (item.cash_in === true) kpis.cashIn += 1
     if (item.hubo_error === true) {
       kpis.errores += 1
-      sumar(erroresPorTipo, texto(item.tipo_error) || 'Sin tipo')
     }
     if (item.es_plaza_temporal === true) kpis.plazasTemporales += 1
-    sumar(porDia, fecha || 'Sin fecha')
-    sumar(porPlaza, plaza)
-    sumar(porActivador, activador)
-    sumar(porTipo, tipo)
   }
 
-  return {
-    rows,
-    kpis,
-    porDia: ranking(porDia).sort((a, b) => a.label.localeCompare(b.label)),
-    porPlaza: ranking(porPlaza),
-    porActivador: ranking(porActivador, 10),
-    porTipo: ranking(porTipo),
-    erroresPorTipo: ranking(erroresPorTipo),
-  }
+  return { rows, kpis }
 })
 
 const tarjetas = computed(() => [
   { key: 'total', label: 'Total de activaciones', value: dashboard.value.kpis.total, note: 'Registros en el corte actual' },
-  { key: 'tiendas', label: 'Tiendas de barrio', value: dashboard.value.kpis.tiendasBarrio, note: 'Identificadas en los datos' },
-  { key: 'comercios', label: 'Comercios', value: dashboard.value.kpis.comercios, note: 'Activaciones comerciales' },
-  { key: 'cash-in', label: 'Con Cash-In', value: dashboard.value.kpis.cashIn, note: 'Cash-In completado' },
+  { key: 'hoy', label: 'Activaciones de hoy', value: dashboard.value.kpis.hoy, note: formatDate(todayKey) },
+  { key: 'mes', label: 'Activaciones del mes', value: dashboard.value.kpis.mes, note: `Mes ${nowParts.month}/${nowParts.year}` },
+  { key: 'cash_in', label: 'Con Cash-In', value: dashboard.value.kpis.cashIn, note: 'Cash-In completado' },
   { key: 'errores', label: 'Registros con error', value: dashboard.value.kpis.errores, note: 'Incidencias reportadas' },
-  { key: 'temporales', label: 'Plazas temporales', value: dashboard.value.kpis.plazasTemporales, note: 'Marcadas como temporales' },
+  { key: 'plazas_temporales', label: 'Plazas temporales', value: dashboard.value.kpis.plazasTemporales, note: 'Marcadas como temporales' },
 ])
+
+const graficosSeleccionados = computed(() => {
+  const maps = {}
+  const map = (key) => maps[key] ?? (maps[key] = new Map())
+  const selected = selectedKpi.value
+  for (const item of dashboard.value.rows) {
+    const fecha = fechaRegistro(item)
+    const plaza = plazaRegistro(item)
+    const activador = texto(item.impulsador) || 'Sin activador'
+    const tipo = texto(item.tipo_activacion) || 'Sin especificar'
+    let include = selected === 'total'
+    if (selected === 'hoy') include = fecha === todayKey
+    if (selected === 'mes') include = fecha.startsWith(currentMonthKey)
+    if (selected === 'cash_in') include = item.cash_in === true
+    if (selected === 'errores') include = item.hubo_error === true
+    if (selected === 'plazas_temporales') include = item.es_plaza_temporal === true
+
+    if (selected === 'cash_in') sumar(map('cashStatus'), item.cash_in === true ? 'Con Cash-In' : 'Sin Cash-In')
+    if (!include) continue
+    sumar(map('dia'), fecha || 'Sin fecha')
+    sumar(map('plaza'), plaza)
+    sumar(map('activador'), activador)
+    sumar(map('tipo'), tipo)
+    if (selected === 'hoy') sumar(map('hora'), horaRegistro(item))
+    if (selected === 'errores') sumar(map('errorTipo'), texto(item.tipo_error) || 'Sin tipo')
+    if (selected === 'plazas_temporales') sumar(map('plazaTemporal'), texto(item.plaza_temporal) || plaza)
+  }
+
+  const chronological = (key) => ranking(map(key)).sort((a, b) => a.label.localeCompare(b.label))
+  const common = {
+    plaza: { title: 'Activaciones por plaza', subtitle: 'Distribucion territorial.', values: ranking(map('plaza')), tone: 'soft' },
+    activador: { title: selected === 'total' ? 'Top 10 activadores' : 'Activadores relacionados', subtitle: 'Participacion por activador.', values: ranking(map('activador'), 10) },
+  }
+  const configs = {
+    total: [
+      { title: 'Activaciones por dia', subtitle: 'Evolucion del volumen filtrado.', values: chronological('dia'), dateLabels: true, wide: true },
+      common.plaza,
+      { title: 'Tipos de activacion', subtitle: 'Composicion del trabajo.', values: ranking(map('tipo')), tone: 'soft' },
+      common.activador,
+    ],
+    hoy: [
+      { title: 'Activaciones de hoy por hora', subtitle: 'Distribucion horaria en Bolivia.', values: chronological('hora'), wide: true },
+      common.plaza, common.activador,
+    ],
+    mes: [
+      { title: 'Tendencia diaria del mes', subtitle: 'Actividad del mes calendario actual.', values: chronological('dia'), dateLabels: true, wide: true },
+      common.plaza, common.activador,
+    ],
+    cash_in: [
+      { title: 'Con y sin Cash-In', subtitle: 'Comparacion del corte filtrado.', values: ranking(map('cashStatus')), wide: true },
+      { title: 'Evolucion de Cash-In', subtitle: 'Activaciones con Cash-In por dia.', values: chronological('dia'), dateLabels: true },
+      common.plaza, common.activador,
+    ],
+    errores: [
+      { title: 'Errores por tipo', subtitle: 'Clasificacion de incidencias.', values: ranking(map('errorTipo')), tone: 'danger', wide: true },
+      { title: 'Errores por dia', subtitle: 'Evolucion de incidencias.', values: chronological('dia'), dateLabels: true, tone: 'danger' },
+      common.plaza, common.activador,
+    ],
+    plazas_temporales: [
+      { title: 'Tendencia de plazas temporales', subtitle: 'Registros temporales por dia.', values: chronological('dia'), dateLabels: true, wide: true },
+      { title: 'Plazas temporales mas usadas', subtitle: 'Frecuencia declarada.', values: ranking(map('plazaTemporal')), tone: 'soft' },
+      common.activador,
+    ],
+  }
+  return (configs[selected] ?? []).filter((chart) => chart.values.length)
+})
 
 const hayFiltros = computed(() => Boolean(filtroDesde.value || filtroHasta.value || filtroPlaza.value || filtroActivador.value || filtroTipo.value || filtroLider.value))
 
@@ -191,20 +253,13 @@ function anchoBarra(value, values) {
 
       <div v-else class="metrics-dashboard">
         <div class="kpi-grid kpi-grid-v2">
-          <article v-for="card in tarjetas" :key="card.key" class="kpi-card" :title="card.note"><p class="kpi-label">{{ card.label }}</p><p class="kpi-value">{{ formatNumber(card.value) }}</p><p class="kpi-note">{{ card.note }}</p></article>
+          <button v-for="card in tarjetas" :key="card.key" type="button" class="kpi-card kpi-card-button" :class="{ 'kpi-card-active': selectedKpi === card.key }" :aria-pressed="selectedKpi === card.key" :title="`${card.label}: ${formatNumber(card.value)}. ${card.note}`" @click="selectedKpi = card.key"><span class="kpi-label">{{ card.label }}</span><strong class="kpi-value">{{ formatNumber(card.value) }}</strong><span class="kpi-note">{{ card.note }}</span></button>
         </div>
 
-        <div class="dashboard-charts-grid">
-          <article class="analytics-card chart-card-wide"><h3 class="analytics-title">Activaciones por dia</h3><p class="analytics-subtitle">Evolucion cronologica del volumen filtrado.</p><div class="dashboard-bars"><div v-for="item in dashboard.porDia" :key="item.label" class="dashboard-bar-row" :title="`${formatDate(item.label)}: ${formatNumber(item.value)} activaciones`"><span>{{ formatDate(item.label) }}</span><div class="metric-track"><div class="metric-fill" :style="{ width: anchoBarra(item.value, dashboard.porDia) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div></article>
-
-          <article class="analytics-card"><h3 class="analytics-title">Activaciones por plaza</h3><p class="analytics-subtitle">Distribucion de cobertura.</p><div class="dashboard-bars"><div v-for="item in dashboard.porPlaza" :key="item.label" class="dashboard-bar-row" :title="`${item.label}: ${formatNumber(item.value)}`"><span>{{ item.label }}</span><div class="metric-track"><div class="metric-fill metric-fill-soft" :style="{ width: anchoBarra(item.value, dashboard.porPlaza) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div></article>
-
-          <article class="analytics-card"><h3 class="analytics-title">Top 10 activadores</h3><p class="analytics-subtitle">Mayor cantidad de registros.</p><div class="dashboard-bars"><div v-for="item in dashboard.porActivador" :key="item.label" class="dashboard-bar-row" :title="`${item.label}: ${formatNumber(item.value)}`"><span>{{ item.label }}</span><div class="metric-track"><div class="metric-fill" :style="{ width: anchoBarra(item.value, dashboard.porActivador) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div></article>
-
-          <article class="analytics-card"><h3 class="analytics-title">Tipos de activacion</h3><p class="analytics-subtitle">Composicion del trabajo realizado.</p><div class="dashboard-bars"><div v-for="item in dashboard.porTipo" :key="item.label" class="dashboard-bar-row" :title="`${item.label}: ${formatNumber(item.value)}`"><span>{{ item.label }}</span><div class="metric-track"><div class="metric-fill metric-fill-soft" :style="{ width: anchoBarra(item.value, dashboard.porTipo) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div></article>
-
-          <article class="analytics-card"><h3 class="analytics-title">Errores por tipo</h3><p class="analytics-subtitle">Incidencias agrupadas por clasificacion.</p><div v-if="dashboard.erroresPorTipo.length" class="dashboard-bars"><div v-for="item in dashboard.erroresPorTipo" :key="item.label" class="dashboard-bar-row" :title="`${item.label}: ${formatNumber(item.value)}`"><span>{{ item.label }}</span><div class="metric-track"><div class="metric-fill metric-fill-danger" :style="{ width: anchoBarra(item.value, dashboard.erroresPorTipo) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div><p v-else class="analytics-empty">No hay errores en el corte actual.</p></article>
+        <div v-if="graficosSeleccionados.length" class="dashboard-charts-grid">
+          <article v-for="chart in graficosSeleccionados" :key="chart.title" class="analytics-card" :class="{ 'chart-card-wide': chart.wide }"><h3 class="analytics-title">{{ chart.title }}</h3><p class="analytics-subtitle">{{ chart.subtitle }}</p><div class="dashboard-bars"><div v-for="item in chart.values" :key="item.label" class="dashboard-bar-row" :title="`${chart.dateLabels ? formatDate(item.label) : item.label}: ${formatNumber(item.value)}`"><span>{{ chart.dateLabels ? formatDate(item.label) : item.label }}</span><div class="metric-track"><div class="metric-fill" :class="{ 'metric-fill-soft': chart.tone === 'soft', 'metric-fill-danger': chart.tone === 'danger' }" :style="{ width: anchoBarra(item.value, chart.values) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div></article>
         </div>
+        <p v-else class="panel-empty">No hay datos para los graficos de este indicador con los filtros actuales.</p>
       </div>
     </div>
   </section>

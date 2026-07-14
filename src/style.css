@@ -1160,6 +1160,35 @@ button {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.kpi-card-button {
+  width: 100%;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.kpi-card-button:hover {
+  transform: translateY(-2px);
+  border-color: rgba(23, 105, 255, 0.45);
+}
+
+.kpi-card-button:focus-visible {
+  outline: 3px solid rgba(23, 105, 255, 0.3);
+  outline-offset: 2px;
+}
+
+.kpi-card-active {
+  border-color: var(--ru-primary);
+  background: linear-gradient(168deg, #ffffff 0%, #e2eeff 100%);
+  box-shadow: 0 12px 26px rgba(23, 105, 255, 0.17);
+}
+
+.kpi-card-active::before {
+  height: 5px;
+}
+
 .dashboard-charts-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
