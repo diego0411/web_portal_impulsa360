@@ -1160,39 +1160,56 @@ button {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.kpi-card-button {
-  width: 100%;
-  text-align: left;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.kpi-card-button:hover {
-  transform: translateY(-2px);
-  border-color: rgba(23, 105, 255, 0.45);
-}
-
-.kpi-card-button:focus-visible {
-  outline: 3px solid rgba(23, 105, 255, 0.3);
-  outline-offset: 2px;
-}
-
-.kpi-card-active {
-  border-color: var(--ru-primary);
-  background: linear-gradient(168deg, #ffffff 0%, #e2eeff 100%);
-  box-shadow: 0 12px 26px rgba(23, 105, 255, 0.17);
-}
-
-.kpi-card-active::before {
-  height: 5px;
-}
-
 .dashboard-charts-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.75rem;
+}
+
+.dashboard-charts-grid,
+.dashboard-chart-card,
+.heat-map-card,
+.heat-map-header {
+  min-width: 0;
+}
+
+.dashboard-chart-card {
+  min-height: 250px;
+}
+
+.analytics-title,
+.analytics-subtitle {
+  overflow-wrap: anywhere;
+}
+
+.heat-map-card {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.heat-map-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.metrics-heat-map {
+  width: 100%;
+  height: clamp(340px, 52vh, 560px);
+  min-width: 0;
+  border: 1px solid var(--ru-border);
+  border-radius: 14px;
+  overflow: hidden;
+  background: #e8f0f7;
+}
+
+.metrics-heat-map .leaflet-tooltip {
+  max-width: 240px;
+  white-space: normal;
+  color: #173b5d;
+  font-size: 0.76rem;
 }
 
 .chart-card-wide {
