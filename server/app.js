@@ -673,6 +673,17 @@ export function createAdminApiApp({ env = process.env } = {}) {
     next()
   }
 
+  function requireStrictAdminBasicAuth(req, res, next) {
+    const parsed = parseBasicAuth(req.headers.authorization)
+    const valid = parsed && timingSafeEqualText(parsed.username, env.ADMIN_BASIC_USER) && timingSafeEqualText(parsed.password, env.ADMIN_BASIC_PASS)
+    if (!valid) {
+      res.setHeader('WWW-Authenticate', 'Basic realm="admin-api"')
+      jsonError(res, 401, 'Credenciales administrativas invalidas.')
+      return
+    }
+    next()
+  }
+
   app.get('/healthz', (_req, res) => {
     res.json({ ok: true })
   })
@@ -814,6 +825,38 @@ export function createAdminApiApp({ env = process.env } = {}) {
       }
 
       res.status(201).json({ user: insertedUser })
+    })
+  )
+
+  app.post(
+    '/admin/users/:userId/reset-password',
+    requireStrictAdminBasicAuth,
+    asyncRoute(async (req, res) => {
+      const userId = normalizeText(req.params?.userId)
+      const password = typeof req.body?.password === 'string' ? req.body.password : ''
+
+      if (!userId) {
+        jsonError(res, 400, 'Parametro userId requerido.')
+        return
+      }
+      if (password.length < 10 || !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password) || !/[^A-Za-z0-9]/.test(password)) {
+        jsonError(res, 400, 'La contrasena debe tener al menos 10 caracteres, mayuscula, minuscula, numero y simbolo.')
+        return
+      }
+
+      const { data: existingAuthUser, error: getUserError } = await adminSupabase.auth.admin.getUserById(userId)
+      if (getUserError || !existingAuthUser?.user) {
+        jsonError(res, 404, 'No se encontro el usuario solicitado.')
+        return
+      }
+
+      const { error: updatePasswordError } = await adminSupabase.auth.admin.updateUserById(userId, { password })
+      if (updatePasswordError) {
+        jsonError(res, 500, 'No se pudo restablecer la contrasena.')
+        return
+      }
+
+      res.json({ ok: true })
     })
   )
 
