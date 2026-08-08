@@ -4,6 +4,7 @@ import { portalRequest } from '../lib/activacionesService'
 import { supabase } from '../lib/supabaseClient'
 import { AUTH_ENABLED } from '../lib/featureFlags'
 import { containsNormalized } from '../lib/textUtils'
+import { notifyError, notifyInfo, notifySuccess } from '../lib/feedback'
 
 const impulsadores = ref([])
 const loading = ref(true)
@@ -15,6 +16,7 @@ const filtroEquipo = ref('')
 const filtroLider = ref('')
 const filtroFacturador = ref('')
 const filtroEstado = ref('')
+const exportandoExcel = ref(false)
 
 const plazas = computed(() => [...new Set(impulsadores.value.map((i) => i.plaza_nombre || i.plaza_base || i.plaza).filter(Boolean))].sort())
 const equipos = computed(() => [...new Map(impulsadores.value.filter((i) => i.equipo_numero).map((i) => [String(i.equipo_numero), `#${i.equipo_numero} - ${i.equipo_nombre || 'Equipo'}`])).entries()])
@@ -39,6 +41,84 @@ const impulsadoresFiltrados = computed(() => {
     return (impulsador.rol ?? 'activador') === 'activador' && coincideNombre && coincideEmail && coincidePlaza && coincideEquipo && coincideLider && coincideFacturador && coincideEstado
   })
 })
+
+const columnasExcel = [
+  ['#', (_row, index) => index + 1],
+  ['Nombre', (row) => row.nombre],
+  ['Email', (row) => row.email],
+  ['Plaza base', (row) => row.plaza_nombre || row.plaza_base || row.plaza],
+  ['Facturador', (row) => row.facturador_nombre || row.facturador_codigo || '-'],
+  ['Estado', (row) => row.estado || 'Sin estado'],
+  ['Lider', (row) => nombreLider(row)],
+  ['Equipo', (row) => row.equipo_numero ? `#${row.equipo_numero} - ${row.equipo_nombre || 'Equipo'}` : '-'],
+  ['Plaza temporal', (row) => row.plaza_temporal_activa ? row.plaza_efectiva : '-'],
+  ['Usuario ID', (row) => row.usuario_id],
+]
+
+function descargarArchivo({ filename, content, mimeType }) {
+  const blob = new Blob([content], { type: mimeType })
+  const objectUrl = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = objectUrl
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+}
+
+async function exportarImpulsadoresExcel() {
+  const datos = impulsadoresFiltrados.value
+  if (!datos.length) {
+    notifyInfo('No hay impulsadores para exportar con los filtros actuales.')
+    return
+  }
+
+  exportandoExcel.value = true
+  try {
+    const ExcelJS = await import('exceljs')
+    const workbook = new ExcelJS.Workbook()
+    workbook.creator = 'Impulsa 360'
+    workbook.created = new Date()
+    const worksheet = workbook.addWorksheet('Impulsadores')
+    worksheet.columns = columnasExcel.map(([header]) => ({
+      header,
+      key: header,
+      width: Math.max(12, Math.min(34, String(header).length + 8)),
+    }))
+    worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } }
+    worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1769FF' } }
+    worksheet.getRow(1).alignment = { vertical: 'middle' }
+
+    datos.forEach((row, index) => {
+      worksheet.addRow(Object.fromEntries(columnasExcel.map(([header, getValue]) => [header, getValue(row, index) ?? ''])))
+    })
+    worksheet.views = [{ state: 'frozen', ySplit: 1 }]
+    worksheet.autoFilter = { from: 'A1', to: `${worksheet.getColumn(columnasExcel.length).letter}1` }
+    worksheet.eachRow((row) => {
+      row.eachCell((cell) => {
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FFDCE8F4' } },
+          left: { style: 'thin', color: { argb: 'FFDCE8F4' } },
+          bottom: { style: 'thin', color: { argb: 'FFDCE8F4' } },
+          right: { style: 'thin', color: { argb: 'FFDCE8F4' } },
+        }
+      })
+    })
+
+    descargarArchivo({
+      filename: 'impulsadores.xlsx',
+      content: await workbook.xlsx.writeBuffer(),
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    notifySuccess(`Excel exportado con ${datos.length} impulsadores.`)
+  } catch (error) {
+    console.error('Error al exportar impulsadores:', error)
+    notifyError(error instanceof Error ? error.message : 'No se pudo exportar el Excel.')
+  } finally {
+    exportandoExcel.value = false
+  }
+}
 
 onMounted(async () => {
   loading.value = true
@@ -100,6 +180,7 @@ onMounted(async () => {
 
     <div class="toolbar-line">
       <span class="meta-pill">{{ impulsadoresFiltrados.length }} visibles</span>
+      <button type="button" class="boton-exportar" :disabled="loading || exportandoExcel || !impulsadoresFiltrados.length" @click="exportarImpulsadoresExcel">{{ exportandoExcel ? 'Generando Excel...' : 'Exportar Excel' }}</button>
     </div>
 
     <p v-if="loading">Cargando...</p>
