@@ -191,7 +191,7 @@ function exportarDashboard() {
     <div v-else class="metrics-saas-content">
       <section class="metrics-kpi-grid metrics-kpi-grid-compact"><article v-for="card in tarjetas" :key="card.key" class="metrics-kpi-card" :title="`${card.label}: ${card.value}`"><span class="metrics-kpi-icon">{{ card.icon }}</span><div><p class="metrics-kpi-label">{{ card.label }}</p><p class="metrics-kpi-value">{{ card.value }}</p><p class="metrics-kpi-note">{{ card.note }}</p></div></article></section>
       <section class="metrics-main-grid">
-        <article class="metrics-chart-card metrics-line-card"><h3>Activaciones por Fecha</h3><p>Evolución diaria del periodo filtrado.</p><div class="chart-legend"><span class="legend-dot"></span><span>Activaciones filtradas</span></div><div class="metrics-line-wrap"><svg class="metrics-line-svg" :viewBox="`0 0 ${lineChart.width} ${lineChart.height}`" role="img" aria-label="Activaciones por fecha"><g class="line-grid"><line v-for="n in 5" :key="n" x1="42" :y1="28 + (n - 1) * 51" x2="878" :y2="28 + (n - 1) * 51"></line></g><polyline v-if="lineChart.points.length" :points="lineChart.polyline" fill="none" stroke="#7c2abf" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"></polyline><g v-for="point in lineChart.points" :key="point.label"><title>{{ formatDate(point.label) }}: {{ formatNumber(point.value) }} activaciones</title><circle :cx="point.x" :cy="point.y" r="4.5" fill="#7c2abf"></circle><text :x="point.x" :y="point.y - 9" text-anchor="middle">{{ point.value }}</text><text class="line-date" :x="point.x" y="246" text-anchor="middle">{{ formatShortDate(point.label) }}</text></g></svg></div></article>
+        <article class="metrics-chart-card metrics-line-card"><h3>Activaciones por Fecha</h3><p>Evolución diaria del periodo filtrado.</p><div class="chart-legend"><span class="legend-dot"></span><span>Activaciones filtradas</span></div><div class="metrics-line-wrap"><svg class="metrics-line-svg" :viewBox="`0 0 ${lineChart.width} ${lineChart.height}`" role="img" aria-label="Activaciones por fecha"><g class="line-grid"><line v-for="n in 5" :key="n" x1="42" :y1="28 + (n - 1) * 51" x2="878" :y2="28 + (n - 1) * 51"></line></g><polyline v-if="lineChart.points.length" :points="lineChart.polyline" fill="none" stroke="var(--ru-primary)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"></polyline><g v-for="point in lineChart.points" :key="point.label"><title>{{ formatDate(point.label) }}: {{ formatNumber(point.value) }} activaciones</title><circle :cx="point.x" :cy="point.y" r="4.5" fill="var(--ru-primary)"></circle><text :x="point.x" :y="point.y - 9" text-anchor="middle">{{ point.value }}</text><text class="line-date" :x="point.x" y="246" text-anchor="middle">{{ formatShortDate(point.label) }}</text></g></svg></div></article>
         <article class="metrics-chart-card metrics-type-card"><h3>Activaciones por Tipo</h3><p>Mercado, Barrio y Comercio según datos registrados.</p><div class="chart-legend"><span class="legend-dot"></span><span>Clasificación</span></div><div class="vertical-bars"><div v-for="item in dashboard.porClasificacion" :key="item.label" class="vertical-bar" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><strong>{{ formatNumber(item.value) }}</strong><span :style="{ height: barHeight(item.value, dashboard.porClasificacion) }"></span><small>{{ item.label }}</small></div></div></article>
       </section>
       <section class="metrics-three-grid">
@@ -303,7 +303,7 @@ function exportarDashboard() {
 }
 
 .metrics-line-svg text {
-  fill: #7c2abf;
+  fill: var(--ru-primary);
   font-size: 12px;
   font-weight: 700;
 }
@@ -333,11 +333,11 @@ function exportarDashboard() {
   width: 0.65rem;
   height: 0.65rem;
   border-radius: 999px;
-  background: #7c2abf;
+  background: var(--ru-primary);
 }
 
 .legend-dot-soft {
-  background: #9b6bd3;
+  background: var(--ru-primary-strong);
 }
 
 .metrics-type-card,
@@ -399,7 +399,7 @@ function exportarDashboard() {
   width: 72%;
   min-height: 8px;
   border-radius: 7px 7px 0 0;
-  background: linear-gradient(180deg, #9b6bd3 0%, #7c2abf 100%);
+  background: linear-gradient(180deg, var(--ru-primary) 0%, var(--ru-primary-strong) 100%);
 }
 
 .vertical-bar strong {
