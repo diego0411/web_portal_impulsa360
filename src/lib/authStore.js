@@ -7,6 +7,7 @@ const loading = ref(true)
 const accessError = ref('')
 const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(/\/$/, '')
 let initialization
+let profileLoad
 
 async function loadProfile(currentSession) {
   session.value = currentSession
@@ -19,13 +20,18 @@ async function loadProfile(currentSession) {
   else profile.value = payload.profile
 }
 
+function queueProfileLoad(currentSession) {
+  profileLoad = loadProfile(currentSession)
+  return profileLoad
+}
+
 export function initializeAuth() {
   if (!initialization) {
     initialization = (async () => {
       loading.value = true
       const { data } = await supabase.auth.getSession()
-      await loadProfile(data.session)
-      supabase.auth.onAuthStateChange((_event, nextSession) => { loadProfile(nextSession) })
+      await queueProfileLoad(data.session)
+      supabase.auth.onAuthStateChange((_event, nextSession) => { queueProfileLoad(nextSession) })
       loading.value = false
     })()
   }
@@ -36,7 +42,7 @@ export async function signIn(email, password) {
   loading.value = true
   const { data, error } = await supabase.auth.signInWithPassword({ email, password })
   if (error) { loading.value = false; throw error }
-  await loadProfile(data.session)
+  await (profileLoad ?? queueProfileLoad(data.session))
   loading.value = false
   if (!profile.value) { const reason = accessError.value || 'Acceso no autorizado.'; await supabase.auth.signOut(); accessError.value = reason; throw new Error(reason) }
 }
