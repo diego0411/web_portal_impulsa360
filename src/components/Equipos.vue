@@ -10,7 +10,7 @@ const catalogo = ref({ available: false, message: '', equipos: [], plazas: [], f
 const usuarios = ref([])
 const loading = ref(false)
 const procesando = ref(false)
-const nuevo = ref({ nombre: '', plaza_id: '', facturador_id: '', lider_id: '' })
+const nuevo = ref({ plaza_id: '', facturador_id: '', lider_id: '' })
 const editandoId = ref(null)
 const edicion = ref({})
 const detalle = ref(null)
@@ -37,13 +37,13 @@ async function cargar() {
 }
 
 async function crear() {
-  if (!nuevo.value.nombre.trim() || !nuevo.value.plaza_id || !nuevo.value.facturador_id) {
-    notifyWarning('Nombre, plaza y facturador son obligatorios.'); return
+  if (!nuevo.value.plaza_id || !nuevo.value.facturador_id) {
+    notifyWarning('Plaza y facturador son obligatorios.'); return
   }
   procesando.value = true
   try {
     await request('/admin/teams', { method: 'POST', body: nuevo.value })
-    nuevo.value = { nombre: '', plaza_id: '', facturador_id: '', lider_id: '' }
+    nuevo.value = { plaza_id: '', facturador_id: '', lider_id: '' }
     await cargar(); notifySuccess('Equipo creado correctamente.')
   } catch (error) { notifyError(errorMessage(error)) }
   finally { procesando.value = false }
@@ -55,7 +55,7 @@ function editar(team) {
 }
 function cancelar() { editandoId.value = null; edicion.value = {} }
 async function guardar(team) {
-  if (!edicion.value.nombre?.trim() || !edicion.value.facturador_id) { notifyWarning('Nombre y facturador son obligatorios.'); return }
+  if (!edicion.value.facturador_id) { notifyWarning('Facturador es obligatorio.'); return }
   procesando.value = true
   try {
     await request(`/admin/teams/${team.id}`, { method: 'PATCH', body: edicion.value })
@@ -90,7 +90,6 @@ onMounted(cargar)
     <p v-if="catalogo.message" class="panel-empty">{{ catalogo.message }}</p>
     <div v-if="catalogo.available" class="forms-grid">
       <div class="formulario-registro"><h2 class="subtitulo">Crear equipo</h2><form class="formulario-campos" @submit.prevent="crear">
-        <input v-model="nuevo.nombre" class="input-texto" placeholder="Nombre del equipo">
         <select v-model="nuevo.plaza_id" class="input-texto"><option value="">Plaza</option><option v-for="item in catalogo.plazas" :key="item.id" :value="item.id">{{ item.nombre }}</option></select>
         <select v-model="nuevo.facturador_id" class="input-texto"><option value="">Facturador</option><option v-for="item in catalogo.facturadores" :key="item.id" :value="item.id">{{ item.nombre }}</option></select>
         <select v-model="nuevo.lider_id" class="input-texto"><option value="">Sin lider</option><option v-for="item in lideres" :key="item.usuario_id" :value="item.usuario_id">{{ item.nombre }}</option></select>
@@ -100,24 +99,24 @@ onMounted(cargar)
     <p v-if="loading">Cargando equipos...</p>
     <div v-else-if="catalogo.available" class="panel-card tabla-contenedor">
       <div class="toolbar-line"><h2 class="subtitulo subtitulo-inline">Equipos registrados</h2><span class="meta-pill">{{ catalogo.equipos.length }}</span></div>
-      <div class="table-wrap modulo-table-wrap"><table><thead><tr><th>Número</th><th>Nombre</th><th>Plaza</th><th>Facturador</th><th>Líder actual</th><th>Integrantes</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>
+      <div class="table-wrap modulo-table-wrap"><table><thead><tr><th>Número</th><th>Plaza</th><th>Facturador</th><th>Líder actual</th><th>Integrantes</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>
         <tr v-for="team in catalogo.equipos" :key="team.id">
           <template v-if="editandoId === team.id">
-            <td>#{{ team.numero }}</td><td><input v-model="edicion.nombre" class="input-editar"></td><td>{{ plazasPorId[team.plaza_id]?.nombre ?? '-' }}</td>
+            <td>#{{ team.numero }}</td><td>{{ plazasPorId[team.plaza_id]?.nombre ?? '-' }}</td>
             <td><select v-model="edicion.facturador_id" class="input-editar"><option v-for="item in catalogo.facturadores" :key="item.id" :value="item.id">{{ item.nombre }}</option></select></td>
             <td><select v-model="edicion.lider_id" class="input-editar"><option value="">Sin lider</option><option v-for="item in lideres" :key="item.usuario_id" :value="item.usuario_id">{{ item.nombre }}</option></select></td>
             <td>{{ team.integrantes }}</td><td><select v-model="edicion.activo" class="input-editar"><option :value="true">Activo</option><option :value="false">Inactivo</option></select></td>
             <td><button class="boton boton-guardar" :disabled="procesando" @click="guardar(team)">Guardar</button><button class="boton boton-cancelar" @click="cancelar">Cancelar</button></td>
           </template>
           <template v-else>
-            <td>#{{ team.numero }}</td><td>{{ team.nombre }}</td><td>{{ plazasPorId[team.plaza_id]?.nombre ?? '-' }}</td><td>{{ facturadoresPorId[team.facturador_id]?.nombre ?? '-' }}</td><td>{{ liderNombre(team.lider_actual_id) }}</td><td>{{ team.integrantes }}</td>
+            <td>#{{ team.numero }}</td><td>{{ plazasPorId[team.plaza_id]?.nombre ?? '-' }}</td><td>{{ facturadoresPorId[team.facturador_id]?.nombre ?? '-' }}</td><td>{{ liderNombre(team.lider_actual_id) }}</td><td>{{ team.integrantes }}</td>
             <td><span class="scope-pill" :class="team.activo ? 'scope-pill-all' : 'scope-pill-user'">{{ team.activo ? 'Activo' : 'Inactivo' }}</span></td>
             <td><button class="boton" @click="verDetalle(team)">Ver</button><button class="boton boton-editar" @click="editar(team)">Editar</button><button class="boton" :disabled="procesando" @click="cambiarEstado(team)">{{ team.activo ? 'Desactivar' : 'Activar' }}</button></td>
           </template>
         </tr>
       </tbody></table></div>
     </div>
-    <teleport to="body"><div v-if="detalle" class="confirm-overlay" @click.self="detalle = null"><section class="confirm-modal" role="dialog" aria-modal="true"><h3 class="confirm-title">#{{ detalle.team.numero }} - {{ detalle.team.nombre }}</h3>
+    <teleport to="body"><div v-if="detalle" class="confirm-overlay" @click.self="detalle = null"><section class="confirm-modal" role="dialog" aria-modal="true"><h3 class="confirm-title">Equipo #{{ detalle.team.numero }}</h3>
       <h4>Integrantes</h4><p v-if="!detalle.integrantes?.length" class="panel-empty">Sin integrantes.</p><ul v-else><li v-for="item in detalle.integrantes" :key="item.usuario_id">{{ item.nombre }} — {{ item.estado }}</li></ul>
       <h4>Historial de líderes</h4><p v-if="!detalle.historial?.length" class="panel-empty">Sin historial.</p><ul v-else><li v-for="item in detalle.historial" :key="item.id">{{ liderNombre(item.lider_id) }} — {{ new Date(item.inicio).toLocaleString() }} a {{ item.fin ? new Date(item.fin).toLocaleString() : 'vigente' }}</li></ul>
       <div class="confirm-actions"><button class="boton" @click="detalle = null">Cerrar</button></div>

@@ -53,6 +53,7 @@ const SUPABASE_FREE_PLAN_REFERENCE = Object.freeze({
   file_storage_limit_bytes: 1 * GB,
   support: 'Community support',
 })
+const INTERNAL_TEAM_NAME = 'Equipo administrativo'
 
 function normalizeText(value) {
   return typeof value === 'string' ? value.trim() : ''
@@ -832,7 +833,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
     if (!authorization.startsWith('Bearer ')) return null
     const { data: authData, error: authError } = await adminSupabase.auth.getUser(authorization.slice(7))
     if (authError || !authData.user) return null
-    const { data: profile } = await adminSupabase.from('activadores').select('usuario_id,nombre,email,rol,estado,lider_id').eq('usuario_id', authData.user.id).maybeSingle()
+    const { data: profile } = await adminSupabase.from('activadores').select('usuario_id,nombre,email,rol,estado,lider_id,puede_activar').eq('usuario_id', authData.user.id).maybeSingle()
     if (!profile || profile.estado !== 'activo' || !['administrador', 'lider'].includes(profile.rol)) return null
     return profile
   }
@@ -983,6 +984,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const rawPlaza = req.body?.plaza
       const rol = normalizeText(req.body?.rol) || 'activador'
       const estado = normalizeText(req.body?.estado) || 'activo'
+      const puedeActivar = rol === 'lider' && req.body?.puede_activar === true
       let liderId = rol === 'activador' ? normalizeNullableText(req.body?.lider_id) : null
       const motivoInhabilitacion = normalizeNullableText(req.body?.motivo_inhabilitacion)
 
@@ -1088,6 +1090,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
         plaza,
         rol,
         estado,
+        puede_activar: puedeActivar,
         lider_id: liderId,
         inhabilitado_at: estado === 'inhabilitado' ? new Date().toISOString() : null,
         motivo_inhabilitacion: estado === 'inhabilitado' ? motivoInhabilitacion : null,
@@ -1204,12 +1207,12 @@ export function createAdminApiApp({ env = process.env } = {}) {
   }))
 
   app.post('/admin/teams', asyncRoute(async (req, res) => {
-    const nombre = normalizeText(req.body?.nombre)
+    const nombre = normalizeText(req.body?.nombre) || INTERNAL_TEAM_NAME
     const plazaId = normalizeNullableText(req.body?.plaza_id)
     const facturadorId = normalizeNullableText(req.body?.facturador_id)
     const liderId = normalizeNullableText(req.body?.lider_id)
-    if (!nombre || !plazaId || !facturadorId) {
-      jsonError(res, 400, 'Nombre, plaza y facturador son obligatorios.')
+    if (!plazaId || !facturadorId) {
+      jsonError(res, 400, 'Plaza y facturador son obligatorios.')
       return
     }
     if (liderId) {
@@ -1247,7 +1250,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
     const liderId = normalizeNullableText(req.body?.lider_id)
     const activo = req.body?.activo
     if (!teamId || !nombre || !facturadorId || typeof activo !== 'boolean') {
-      jsonError(res, 400, 'Nombre, facturador y estado son obligatorios.')
+      jsonError(res, 400, 'Facturador y estado son obligatorios.')
       return
     }
     const { error } = await adminSupabase.rpc('actualizar_equipo_organizacion', {
@@ -1407,6 +1410,11 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
       const rol = requestedRol || previousRow.rol || 'activador'
       const estado = requestedEstado || previousRow.estado || 'activo'
+      const puedeActivar = rol === 'lider' && (
+        req.body?.puede_activar === undefined
+          ? previousRow.puede_activar === true
+          : req.body.puede_activar === true
+      )
       let liderId = rol === 'activador'
         ? (req.body?.lider_id === undefined ? previousRow.lider_id : normalizeNullableText(req.body.lider_id))
         : null
@@ -1477,6 +1485,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
         plaza,
         rol,
         estado,
+        puede_activar: puedeActivar,
         lider_id: liderId,
         inhabilitado_at: estado === 'inhabilitado'
           ? previousRow.inhabilitado_at || new Date().toISOString()
@@ -1542,6 +1551,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
             email: previousRow.email ?? null,
             rol: previousRow.rol,
             estado: previousRow.estado,
+            puede_activar: previousRow.puede_activar,
             lider_id: previousRow.lider_id,
             inhabilitado_at: previousRow.inhabilitado_at,
             motivo_inhabilitacion: previousRow.motivo_inhabilitacion,

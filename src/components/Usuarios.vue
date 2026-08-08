@@ -17,9 +17,10 @@ const busqueda = ref('')
 const filtroRol = ref('')
 const filtroEstado = ref('')
 const filtroPlaza = ref('')
+const filtroEquipoId = ref('')
 const organizacion = ref({ available: false, message: '', plazas: [], equipos: [], facturadores: [] })
 
-const nuevo = ref({ email: '', password: '', nombre: '', plaza: '', plaza_id: '', equipo_id: '', equipo_ids: [], facturador_id: '', rol: 'activador', estado: 'activo', lider_id: '', motivo_inhabilitacion: '' })
+const nuevo = ref({ email: '', password: '', nombre: '', plaza: '', plaza_id: '', equipo_id: '', equipo_ids: [], facturador_id: '', rol: 'activador', estado: 'activo', lider_id: '', motivo_inhabilitacion: '', puede_activar: false })
 const editandoId = ref(null)
 const edicion = ref({})
 const modalInhabilitar = ref(false)
@@ -32,12 +33,19 @@ const lideresActivos = computed(() => usuarios.value.filter((u) => (u.rol ?? 'ac
 const plazas = computed(() => organizacion.value.available
   ? organizacion.value.plazas.map((p) => p.nombre)
   : [...new Set(usuarios.value.map((u) => u.plaza).filter(Boolean))].sort((a, b) => a.localeCompare(b)))
+const equiposFiltro = computed(() => organizacion.value.equipos
+  .filter((equipo) => equipo.activo)
+  .map((equipo) => ({ id: equipo.id, etiqueta: etiquetaEquipo(equipo) })))
 const usuariosPorId = computed(() => Object.fromEntries(usuarios.value.map((u) => [u.usuario_id, u])))
 const usuariosFiltrados = computed(() => usuarios.value.filter((u) => {
   const coincideBusqueda = containsNormalized(u.nombre, busqueda.value) || containsNormalized(u.email, busqueda.value)
+  const coincideEquipo = !filtroEquipoId.value ||
+    u.equipo_id === filtroEquipoId.value ||
+    u.equipos_asignados?.some((equipo) => equipo.id === filtroEquipoId.value)
   return coincideBusqueda && (!filtroRol.value || (u.rol ?? 'activador') === filtroRol.value) &&
     (!filtroEstado.value || (u.estado ?? 'activo') === filtroEstado.value) &&
-    (!filtroPlaza.value || (u.plaza_nombre || u.plaza_base || u.plaza) === filtroPlaza.value)
+    (!filtroPlaza.value || (u.plaza_nombre || u.plaza_base || u.plaza) === filtroPlaza.value) &&
+    coincideEquipo
 }))
 
 function requestAdmin(path, options = {}) {
@@ -59,14 +67,14 @@ function liderDelEquipo(form) {
   return equipo?.lider_actual_id ? (usuariosPorId.value[equipo.lider_actual_id]?.nombre ?? 'Lider asignado') : 'Sin lider vigente'
 }
 function plazaDelEquipo(equipo) { return organizacion.value.plazas.find((item) => item.id === equipo.plaza_id)?.nombre ?? 'Sin plaza' }
-function etiquetaEquipo(equipo) { return `#${equipo.numero} - ${equipo.nombre} · ${plazaDelEquipo(equipo)}` }
+function etiquetaEquipo(equipo) { return `#${equipo.numero} · ${plazaDelEquipo(equipo)}` }
 function equiposDelUsuario(usuario) {
-  if (usuario.rol === 'lider') return usuario.equipos_asignados?.map((e) => `#${e.numero} - ${e.nombre} (${e.plaza || 'Sin plaza'})`).join(', ') || 'Sin equipos'
-  return usuario.equipo_numero ? `#${usuario.equipo_numero} - ${usuario.equipo_nombre || 'Equipo'}` : 'Sin equipo'
+  if (usuario.rol === 'lider') return usuario.equipos_asignados?.map((e) => `#${e.numero} (${e.plaza || 'Sin plaza'})`).join(', ') || 'Sin equipos'
+  return usuario.equipo_numero ? `#${usuario.equipo_numero}` : 'Sin equipo'
 }
 function ajustarRol(form) {
   if (form.rol !== 'activador') { form.equipo_id = ''; form.plaza_id = ''; form.lider_id = ''; form.plaza = '' }
-  if (form.rol !== 'lider') { form.equipo_ids = []; form.facturador_id = '' }
+  if (form.rol !== 'lider') { form.equipo_ids = []; form.facturador_id = ''; form.puede_activar = false }
 }
 function ajustarPlaza(form) {
   form.equipo_id = ''
@@ -104,6 +112,7 @@ function payloadUsuario(form) {
   const payload = {
     email: normalizeEmail(form.email), nombre: form.nombre.trim(), plaza: form.plaza?.trim() ?? '',
     rol: form.rol, estado: form.estado, lider_id: !organizacion.value.available && form.rol === 'activador' ? form.lider_id || null : null,
+    puede_activar: form.rol === 'lider' && form.puede_activar === true,
     motivo_inhabilitacion: form.estado === 'inhabilitado' ? form.motivo_inhabilitacion.trim() : null,
   }
   if (organizacion.value.available && form.rol === 'activador') payload.equipo_id = form.equipo_id
@@ -119,7 +128,7 @@ async function registrarUsuario() {
   procesando.value = true
   try {
     await requestAdmin('/admin/users', { method: 'POST', body: { ...payloadUsuario(nuevo.value), password: nuevo.value.password } })
-    nuevo.value = { email: '', password: '', nombre: '', plaza: '', plaza_id: '', equipo_id: '', equipo_ids: [], facturador_id: '', rol: 'activador', estado: 'activo', lider_id: '', motivo_inhabilitacion: '' }
+    nuevo.value = { email: '', password: '', nombre: '', plaza: '', plaza_id: '', equipo_id: '', equipo_ids: [], facturador_id: '', rol: 'activador', estado: 'activo', lider_id: '', motivo_inhabilitacion: '', puede_activar: false }
     await cargarUsuarios(); notifySuccess('Usuario registrado correctamente.')
   } catch (error) { notifyError(getErrorMessage(error)) }
   finally { procesando.value = false }
@@ -128,7 +137,7 @@ function editarUsuario(usuario) {
   editandoId.value = usuario.usuario_id
   const equipo = organizacion.value.equipos.find((item) => item.id === usuario.equipo_id)
   const equiposLider = organizacion.value.equipos.filter((item) => item.lider_actual_id === usuario.usuario_id)
-  edicion.value = { nombre: usuario.nombre ?? '', email: usuario.email ?? '', plaza: usuario.plaza_base ?? usuario.plaza ?? '', plaza_id: equipo?.plaza_id ?? '', equipo_id: usuario.equipo_id ?? '', equipo_ids: equiposLider.map((item) => item.id), facturador_id: equiposLider[0]?.facturador_id ?? '', password: '', rol: usuario.rol ?? 'activador', estado: usuario.estado ?? 'activo', lider_id: usuario.lider_id ?? '', motivo_inhabilitacion: usuario.motivo_inhabilitacion ?? '' }
+  edicion.value = { nombre: usuario.nombre ?? '', email: usuario.email ?? '', plaza: usuario.plaza_base ?? usuario.plaza ?? '', plaza_id: equipo?.plaza_id ?? '', equipo_id: usuario.equipo_id ?? '', equipo_ids: equiposLider.map((item) => item.id), facturador_id: equiposLider[0]?.facturador_id ?? '', password: '', rol: usuario.rol ?? 'activador', estado: usuario.estado ?? 'activo', lider_id: usuario.lider_id ?? '', motivo_inhabilitacion: usuario.motivo_inhabilitacion ?? '', puede_activar: usuario.puede_activar === true }
 }
 function cancelarEdicion() { editandoId.value = null; edicion.value = {} }
 async function guardarEdicion() {
@@ -224,6 +233,7 @@ onMounted(cargarUsuarios)
           <template v-if="nuevo.rol === 'lider' && organizacion.available">
             <select v-model="nuevo.facturador_id" class="input-texto"><option value="">Facturador</option><option v-for="item in organizacion.facturadores" :key="item.id" :value="item.id">{{ item.nombre }}</option></select>
             <label><span class="field-label">Equipos por plaza</span><select v-model="nuevo.equipo_ids" class="input-texto" multiple><option v-for="equipo in equiposPara(nuevo)" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select></label>
+            <label class="scope-pill"><input v-model="nuevo.puede_activar" type="checkbox"> Puede realizar activaciones</label>
           </template>
           <textarea v-if="nuevo.estado === 'inhabilitado'" v-model="nuevo.motivo_inhabilitacion" class="input-texto" placeholder="Motivo de inhabilitacion"></textarea>
           <button type="submit" class="boton boton-primario" :disabled="procesando">{{ procesando ? 'Guardando...' : 'Registrar' }}</button>
@@ -237,6 +247,7 @@ onMounted(cargarUsuarios)
         <label><span class="field-label">Rol</span><select v-model="filtroRol" class="input-texto"><option value="">Todos</option><option v-for="rol in roles" :key="rol" :value="rol">{{ etiqueta(rol) }}</option></select></label>
         <label><span class="field-label">Estado</span><select v-model="filtroEstado" class="input-texto"><option value="">Todos</option><option v-for="estado in estados" :key="estado" :value="estado">{{ etiqueta(estado) }}</option></select></label>
         <label><span class="field-label">Plaza</span><select v-model="filtroPlaza" class="input-texto"><option value="">Todas</option><option v-for="item in plazas" :key="item" :value="item">{{ item }}</option></select></label>
+        <label v-if="organizacion.available"><span class="field-label">Equipo</span><select v-model="filtroEquipoId" class="input-texto"><option value="">Todos</option><option v-for="equipo in equiposFiltro" :key="equipo.id" :value="equipo.id">{{ equipo.etiqueta }}</option></select></label>
       </div>
       <p v-if="loading">Cargando usuarios...</p><p v-else-if="errorMsg" class="mensaje-error">{{ errorMsg }}</p><p v-else-if="!usuariosFiltrados.length" class="panel-empty">No hay usuarios para los filtros seleccionados.</p>
       <div v-else class="table-wrap modulo-table-wrap"><table class="tabla-usuarios"><thead><tr><th>Nombre</th><th>Correo</th><th>Plaza base</th><th>Equipo</th><th>Líder actual</th><th>Facturador</th><th>Rol</th><th>Estado</th><th>Nueva contraseña</th><th>Acciones</th></tr></thead><tbody>
@@ -258,7 +269,7 @@ onMounted(cargarUsuarios)
             <td>{{ edicion.rol === 'activador' ? liderDelEquipo(edicion) : '-' }}</td>
             <td><select v-if="edicion.rol === 'lider' && organizacion.available" v-model="edicion.facturador_id" class="input-editar"><option value="">Facturador</option><option v-for="item in organizacion.facturadores" :key="item.id" :value="item.id">{{ item.nombre }}</option></select><span v-else>{{ edicion.rol === 'activador' ? (usuario.facturador_nombre || '-') : '-' }}</span></td>
             <td><select v-model="edicion.rol" class="input-editar" @change="ajustarRol(edicion)"><option v-for="rol in roles" :key="rol" :value="rol">{{ etiqueta(rol) }}</option></select></td>
-            <td><select v-model="edicion.estado" class="input-editar"><option v-for="estado in estados" :key="estado" :value="estado">{{ etiqueta(estado) }}</option></select><textarea v-if="edicion.estado === 'inhabilitado'" v-model="edicion.motivo_inhabilitacion" class="input-editar" placeholder="Motivo obligatorio"></textarea></td>
+            <td><select v-model="edicion.estado" class="input-editar"><option v-for="estado in estados" :key="estado" :value="estado">{{ etiqueta(estado) }}</option></select><label v-if="edicion.rol === 'lider'" class="scope-pill"><input v-model="edicion.puede_activar" type="checkbox"> Puede realizar activaciones</label><textarea v-if="edicion.estado === 'inhabilitado'" v-model="edicion.motivo_inhabilitacion" class="input-editar" placeholder="Motivo obligatorio"></textarea></td>
             <td><input v-model="edicion.password" type="password" class="input-editar" placeholder="Opcional (contraseña fuerte)"></td><td><div class="acciones"><button class="boton boton-guardar" :disabled="procesando" @click="guardarEdicion">Guardar</button><button class="boton boton-cancelar" :disabled="procesando" @click="cancelarEdicion">Cancelar</button></div></td>
           </template>
           <template v-else>
