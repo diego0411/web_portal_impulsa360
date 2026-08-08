@@ -40,6 +40,7 @@ function comercioRegistro(item) { return texto(item.nombre_comercio) || texto(it
 function formatNumber(value) { return numberFormatter.format(Number(value) || 0) }
 function formatDecimal(value) { return numberFormatter.format(Number(value.toFixed(1)) || 0) }
 function formatDate(value) { const [year, month, day] = String(value || '').split('-'); return year && month && day ? `${day}/${month}/${year}` : 'Sin fecha' }
+function formatShortDate(value) { const [year, month, day] = String(value || '').split('-'); return year && month && day ? `${Number(day)}/${Number(month)}` : 'S/F' }
 function formatMonth(value) { const [year, month] = String(value || '').split('-'); return year && month ? `${month}/${year}` : 'Sin mes' }
 function monthRegistro(fecha) { return String(fecha || '').match(/^\d{4}-\d{2}/)?.[0] ?? 'Sin mes' }
 function weekRegistro(fecha) {
@@ -52,6 +53,13 @@ function weekRegistro(fecha) {
 }
 function sumar(map, key) { const label = texto(key) || 'Sin especificar'; map.set(label, (map.get(label) ?? 0) + 1) }
 function ranking(map, limit = Infinity) { return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'es')).slice(0, limit).map(([label, value]) => ({ label, value })) }
+function clasificacionRegistro(item) {
+  const value = `${normalizado(item.tipo_activacion)} ${normalizado(item.tipo_comercio)} ${normalizado(item.tipo_tienda)}`
+  if (value.includes('mercado')) return 'Mercado'
+  if (value.includes('barrio') || value.includes('tienda')) return 'Barrio'
+  if (value.includes('comercio')) return 'Comercio'
+  return 'Sin clasificación'
+}
 
 const opciones = computed(() => {
   const plazas = new Set(), activadores = new Set(), tipos = new Set(), lideres = new Set(), equipos = new Set()
@@ -68,7 +76,7 @@ const opciones = computed(() => {
 
 const dashboard = computed(() => {
   const rows = [], points = []
-  const maps = { dia: new Map(), semana: new Map(), mes: new Map(), plaza: new Map(), activador: new Map(), tipo: new Map(), lider: new Map() }
+  const maps = { dia: new Map(), semana: new Map(), mes: new Map(), plaza: new Map(), activador: new Map(), tipo: new Map(), lider: new Map(), clasificacion: new Map() }
   const kpis = { total: 0, hoy: 0, semana: 0, mes: 0, cashIn: 0, errores: 0, tiendas: 0, comercios: 0 }
   const activadorQuery = normalizado(filtroActivador.value)
   const teamStats = new Map()
@@ -82,6 +90,7 @@ const dashboard = computed(() => {
     const lider = liderRegistro(item)
     const equipo = equipoRegistro(item)
     const comercio = comercioRegistro(item)
+    const clasificacion = clasificacionRegistro(item)
     if (filtroDesde.value && (!fecha || fecha < filtroDesde.value)) continue
     if (filtroHasta.value && (!fecha || fecha > filtroHasta.value)) continue
     if (filtroPlaza.value && plaza !== filtroPlaza.value) continue
@@ -98,9 +107,9 @@ const dashboard = computed(() => {
     if (fecha.startsWith(monthKey)) kpis.mes += 1
     if (item.cash_in === true) kpis.cashIn += 1
     if (item.hubo_error === true) kpis.errores += 1
-    const clasificacion = `${normalizado(item.tipo_activacion)} ${normalizado(item.tipo_comercio)}`
-    if (clasificacion.includes('tienda') && clasificacion.includes('barrio')) kpis.tiendas += 1
+    if (clasificacion === 'Barrio') kpis.tiendas += 1
     sumar(maps.dia, fecha || 'Sin fecha'); sumar(maps.semana, weekRegistro(fecha)); sumar(maps.mes, monthRegistro(fecha)); sumar(maps.plaza, plaza); sumar(maps.activador, activador); sumar(maps.tipo, tipo)
+    sumar(maps.clasificacion, clasificacion)
     if (lider) sumar(maps.lider, lider)
     const team = teamStats.get(equipo) ?? { nombre: equipo, total: 0, errores: 0, integrantes: new Set() }
     team.total += 1; if (item.hubo_error === true) team.errores += 1; team.integrantes.add(activador); teamStats.set(equipo, team)
@@ -130,7 +139,20 @@ const dashboard = computed(() => {
     semanal: maps.semana.size ? kpis.total / maps.semana.size : 0,
     mensual: maps.mes.size ? kpis.total / maps.mes.size : 0,
   }
-  return { rows, points, kpis: { ...kpis, comercios: comerciosUnicos.size }, promedios, activadoresUnicos: activadoresUnicos.size, porEquipo, resumenEquipoMes, porDia: ranking(maps.dia).sort((a, b) => a.label.localeCompare(b.label)), porPlaza: ranking(maps.plaza), topActivadores: ranking(maps.activador, 10), porTipo: ranking(maps.tipo), topLideres: ranking(maps.lider, 10) }
+  return { rows, points, kpis: { ...kpis, comercios: comerciosUnicos.size }, promedios, activadoresUnicos: activadoresUnicos.size, porEquipo, resumenEquipoMes, porDia: ranking(maps.dia).sort((a, b) => a.label.localeCompare(b.label)), porPlaza: ranking(maps.plaza), topActivadores: ranking(maps.activador, 10), porTipo: ranking(maps.tipo), porClasificacion: ranking(maps.clasificacion), topLideres: ranking(maps.lider, 10) }
+})
+
+const lineChart = computed(() => {
+  const data = dashboard.value.porDia
+  const width = 920, height = 260, padX = 42, padY = 28
+  const max = Math.max(1, ...data.map((item) => item.value))
+  const step = data.length > 1 ? (width - padX * 2) / (data.length - 1) : 0
+  const points = data.map((item, index) => {
+    const x = data.length > 1 ? padX + index * step : width / 2
+    const y = height - padY - (item.value / max) * (height - padY * 2)
+    return { ...item, x, y }
+  })
+  return { width, height, points, polyline: points.map((point) => `${point.x},${point.y}`).join(' '), max }
 })
 
 const tarjetas = computed(() => [
@@ -144,6 +166,7 @@ const tarjetas = computed(() => [
 const hayFiltros = computed(() => Boolean(filtroDesde.value || filtroHasta.value || filtroPlaza.value || filtroActivador.value || filtroTipo.value || filtroLider.value || filtroEquipo.value))
 function limpiarFiltros() { filtroDesde.value = ''; filtroHasta.value = ''; filtroPlaza.value = ''; filtroActivador.value = ''; filtroTipo.value = ''; filtroLider.value = ''; filtroEquipo.value = '' }
 function anchoBarra(value, values) { const max = Math.max(1, ...values.map((item) => item.value)); return `${Math.max(3, (value / max) * 100)}%` }
+function barHeight(value, values) { const max = Math.max(1, ...values.map((item) => item.value)); return `${Math.max(8, (value / max) * 100)}%` }
 function exportarDashboard() {
   if (!dashboard.value.rows.length) return
   const escape = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`
@@ -166,12 +189,303 @@ function exportarDashboard() {
     </div></section>
     <p v-if="loading" class="panel-empty">Cargando indicadores...</p><p v-else-if="errorMsg" class="mensaje-error">{{ errorMsg }}</p><p v-else-if="!dashboard.rows.length" class="panel-empty">No hay activaciones para los filtros seleccionados.</p>
     <div v-else class="metrics-saas-content">
-      <section class="metrics-kpi-grid"><article v-for="card in tarjetas" :key="card.key" class="metrics-kpi-card"><span class="metrics-kpi-icon">{{ card.icon }}</span><div><p class="metrics-kpi-label">{{ card.label }}</p><p class="metrics-kpi-value">{{ card.value }}</p><p class="metrics-kpi-note">{{ card.note }}</p></div></article></section>
-      <section class="metrics-chart-grid"><article class="metrics-chart-card"><h3>Activaciones por fecha</h3><p>Evolución diaria del periodo filtrado.</p><div class="dashboard-bars"><div v-for="item in dashboard.porDia" :key="item.label" class="dashboard-bar-row" :title="`${formatDate(item.label)}: ${formatNumber(item.value)}`"><span>{{ formatDate(item.label) }}</span><div class="metric-track"><div class="metric-fill" :style="{ width: anchoBarra(item.value, dashboard.porDia) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div></article><article class="metrics-chart-card"><h3>Activaciones por ciudad/plaza</h3><p>Distribución territorial del corte.</p><div class="dashboard-bars"><div v-for="item in dashboard.porPlaza" :key="item.label" class="dashboard-bar-row"><span :title="item.label">{{ item.label }}</span><div class="metric-track"><div class="metric-fill metric-fill-soft" :style="{ width: anchoBarra(item.value, dashboard.porPlaza) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div></article></section>
-      <section class="metrics-chart-grid"><article class="metrics-chart-card"><h3>Activaciones por tipo</h3><p>Composición del trabajo realizado.</p><div class="dashboard-bars"><div v-for="item in dashboard.porTipo" :key="item.label" class="dashboard-bar-row"><span :title="item.label">{{ item.label }}</span><div class="metric-track"><div class="metric-fill metric-fill-soft" :style="{ width: anchoBarra(item.value, dashboard.porTipo) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div></article><article class="metrics-chart-card"><h3>Ranking de activadores</h3><p>Mayor volumen de registros.</p><div class="dashboard-bars"><div v-for="item in dashboard.topActivadores" :key="item.label" class="dashboard-bar-row"><span :title="item.label">{{ item.label }}</span><div class="metric-track"><div class="metric-fill" :style="{ width: anchoBarra(item.value, dashboard.topActivadores) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div></article></section>
-      <article class="metrics-chart-card chart-card-wide"><h3>Resumen por equipo y mes</h3><p>Consolidado mensual con activaciones, activadores y comercios por equipo.</p><div class="table-wrap"><table class="tabla-activaciones"><thead><tr><th>Mes</th><th>Equipo</th><th>Total</th><th>Activadores</th><th>Comercios</th></tr></thead><tbody><tr v-for="item in dashboard.resumenEquipoMes" :key="`${item.equipo}-${item.mes}`"><td>{{ formatMonth(item.mes) }}</td><td>{{ item.equipo }}</td><td>{{ formatNumber(item.total) }}</td><td>{{ formatNumber(item.activadores) }}</td><td>{{ formatNumber(item.comercios) }}</td></tr></tbody></table></div></article>
+      <section class="metrics-kpi-grid metrics-kpi-grid-compact"><article v-for="card in tarjetas" :key="card.key" class="metrics-kpi-card" :title="`${card.label}: ${card.value}`"><span class="metrics-kpi-icon">{{ card.icon }}</span><div><p class="metrics-kpi-label">{{ card.label }}</p><p class="metrics-kpi-value">{{ card.value }}</p><p class="metrics-kpi-note">{{ card.note }}</p></div></article></section>
+      <section class="metrics-reference-grid">
+        <article class="metrics-chart-card metrics-line-card"><h3>Activaciones por Fecha</h3><p>Evolución diaria del periodo filtrado.</p><div class="chart-legend"><span class="legend-dot"></span><span>Activaciones filtradas</span></div><div class="metrics-line-wrap"><svg class="metrics-line-svg" :viewBox="`0 0 ${lineChart.width} ${lineChart.height}`" role="img" aria-label="Activaciones por fecha"><g class="line-grid"><line v-for="n in 5" :key="n" x1="42" :y1="28 + (n - 1) * 51" x2="878" :y2="28 + (n - 1) * 51"></line></g><polyline v-if="lineChart.points.length" :points="lineChart.polyline" fill="none" stroke="#7c2abf" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"></polyline><g v-for="point in lineChart.points" :key="point.label"><title>{{ formatDate(point.label) }}: {{ formatNumber(point.value) }} activaciones</title><circle :cx="point.x" :cy="point.y" r="4.5" fill="#7c2abf"></circle><text :x="point.x" :y="point.y - 9" text-anchor="middle">{{ point.value }}</text><text class="line-date" :x="point.x" y="246" text-anchor="middle">{{ formatShortDate(point.label) }}</text></g></svg></div></article>
+        <aside class="metrics-side-stack">
+          <article class="metrics-chart-card compact-chart"><h3>Activaciones por Tipo</h3><p>Mercado, Barrio y Comercio según datos registrados.</p><div class="chart-legend"><span class="legend-dot"></span><span>Clasificación</span></div><div class="vertical-bars"><div v-for="item in dashboard.porClasificacion" :key="item.label" class="vertical-bar" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><strong>{{ formatNumber(item.value) }}</strong><span :style="{ height: barHeight(item.value, dashboard.porClasificacion) }"></span><small>{{ item.label }}</small></div></div></article>
+          <article class="metrics-chart-card compact-chart"><h3>Total Activaciones</h3><p>Detalle por tipo de activación.</p><div class="chart-legend"><span class="legend-dot legend-dot-soft"></span><span>Tipo registrado</span></div><div class="dashboard-bars compact-bars"><div v-for="item in dashboard.porTipo" :key="item.label" class="dashboard-bar-row" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><span>{{ item.label }}</span><div class="metric-track"><div class="metric-fill metric-fill-soft" :style="{ width: anchoBarra(item.value, dashboard.porTipo) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div></article>
+          <article class="metrics-chart-card compact-chart"><h3>Ciudades</h3><p>Distribución por plaza o ciudad.</p><div class="chart-legend"><span class="legend-dot"></span><span>Top 10</span></div><div class="vertical-bars city-bars"><div v-for="item in dashboard.porPlaza.slice(0, 10)" :key="item.label" class="vertical-bar" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><strong>{{ formatNumber(item.value) }}</strong><span :style="{ height: barHeight(item.value, dashboard.porPlaza) }"></span><small>{{ item.label }}</small></div></div></article>
+        </aside>
+      </section>
+      <section class="metrics-bottom-grid">
+        <article class="metrics-chart-card metrics-table-card"><h3>Resumen Equipos</h3><p>Consolidado mensual con activaciones, activadores y comercios por equipo.</p><div class="table-wrap metrics-table-scroll"><table class="tabla-activaciones"><thead><tr><th>Mes</th><th>Equipo</th><th>Total</th><th>Activadores</th><th>Comercios</th><th>Errores</th></tr></thead><tbody><tr v-for="item in dashboard.resumenEquipoMes" :key="`${item.equipo}-${item.mes}`" :title="`${item.equipo} · ${formatMonth(item.mes)}: ${formatNumber(item.total)} activaciones`"><td>{{ formatMonth(item.mes) }}</td><td>{{ item.equipo }}</td><td>{{ formatNumber(item.total) }}</td><td>{{ formatNumber(item.activadores) }}</td><td>{{ formatNumber(item.comercios) }}</td><td>{{ formatNumber(item.errores) }}</td></tr></tbody></table></div></article>
+        <article class="metrics-chart-card metrics-table-card"><h3>Ranking Activadores</h3><p>Mayor volumen de registros del corte.</p><div class="table-wrap metrics-table-scroll"><table class="tabla-activaciones"><thead><tr><th>#</th><th>Activador</th><th>Activaciones</th></tr></thead><tbody><tr v-for="(item, index) in dashboard.topActivadores" :key="item.label" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><td>{{ index + 1 }}</td><td>{{ item.label }}</td><td>{{ formatNumber(item.value) }}</td></tr></tbody></table></div></article>
+      </section>
       <section class="metrics-chart-grid"><article class="metrics-chart-card"><h3>Actividad por líder</h3><p>Registros asociados a líderes disponibles.</p><div v-if="dashboard.topLideres.length" class="dashboard-bars"><div v-for="item in dashboard.topLideres" :key="item.label" class="dashboard-bar-row"><span :title="item.label">{{ item.label }}</span><div class="metric-track"><div class="metric-fill" :style="{ width: anchoBarra(item.value, dashboard.topLideres) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div><p v-else class="analytics-empty">Sin líderes resolubles en los datos actuales.</p></article><article class="metrics-chart-card"><h3>Resumen por equipo</h3><p>Total de activaciones e integrantes únicos por equipo.</p><div class="table-wrap"><table class="tabla-activaciones"><thead><tr><th>Equipo</th><th>Total</th><th>Activadores</th><th>Promedio por activador</th></tr></thead><tbody><tr v-for="team in dashboard.porEquipo" :key="team.nombre"><td>{{ team.nombre }}</td><td>{{ formatNumber(team.total) }}</td><td>{{ formatNumber(team.integrantes) }}</td><td>{{ team.promedio.toFixed(1) }}</td></tr></tbody></table></div></article></section>
       <article class="metrics-chart-card metrics-map-card"><div class="metrics-card-heading"><div><h3>Mapa de calor</h3><p>Concentración geográfica de activaciones.</p></div><span class="meta-pill">{{ formatNumber(dashboard.points.length) }} puntos</span></div><MetricsHeatMap v-if="dashboard.points.length" :points="dashboard.points" /><p v-else class="panel-empty">No hay coordenadas válidas para este corte.</p></article>
     </div>
   </section>
 </template>
+
+<style scoped>
+.metrics-saas-content {
+  gap: 1rem;
+}
+
+.metrics-kpi-grid-compact {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.metrics-kpi-grid-compact :deep(.metrics-kpi-card) {
+  min-height: 116px;
+  height: 116px;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  padding: 0.85rem;
+  border-radius: 14px;
+}
+
+.metrics-kpi-grid-compact :deep(.metrics-kpi-icon) {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  font-size: 1rem;
+}
+
+.metrics-kpi-grid-compact :deep(.metrics-kpi-value) {
+  font-size: clamp(1.55rem, 1.9vw, 2rem);
+}
+
+.metrics-kpi-grid-compact :deep(.metrics-kpi-label),
+.metrics-kpi-grid-compact :deep(.metrics-kpi-note) {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.metrics-kpi-grid-compact :deep(.metrics-kpi-label) {
+  -webkit-line-clamp: 2;
+}
+
+.metrics-kpi-grid-compact :deep(.metrics-kpi-note) {
+  -webkit-line-clamp: 1;
+}
+
+.metrics-reference-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(310px, 360px);
+  gap: 1rem;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.metrics-side-stack,
+.metrics-bottom-grid {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.metrics-side-stack {
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+}
+
+.metrics-bottom-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.72fr);
+  align-items: stretch;
+}
+
+.metrics-line-card {
+  min-height: 650px;
+  display: flex;
+  flex-direction: column;
+}
+
+.metrics-line-wrap {
+  flex: 1;
+  min-height: 500px;
+  margin-top: 1rem;
+  overflow-x: auto;
+  border: 1px solid #d8e4ef;
+  border-radius: 12px;
+  background: #fbfdff;
+}
+
+.metrics-line-svg {
+  display: block;
+  width: 100%;
+  min-width: 720px;
+  height: 100%;
+  min-height: 500px;
+}
+
+.metrics-line-svg text {
+  fill: #7c2abf;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.metrics-line-svg .line-date {
+  fill: #55728e;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.line-grid line {
+  stroke: #c7d3df;
+  stroke-width: 1;
+}
+
+.chart-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.65rem;
+  color: #55728e;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.legend-dot {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 999px;
+  background: #7c2abf;
+}
+
+.legend-dot-soft {
+  background: #9b6bd3;
+}
+
+.compact-chart {
+  min-height: 206px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.compact-bars {
+  max-height: 128px;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.vertical-bars {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(54px, 1fr);
+  align-items: end;
+  gap: 0.65rem;
+  flex: 1;
+  min-height: 112px;
+  height: 112px;
+  margin-top: 1rem;
+  padding: 0.5rem 0.2rem 0;
+  overflow-x: auto;
+  border-bottom: 1px solid #c7d3df;
+}
+
+.vertical-bar {
+  display: grid;
+  grid-template-rows: 22px 1fr 34px;
+  align-items: end;
+  justify-items: center;
+  min-width: 0;
+  height: 100%;
+  color: #24496d;
+}
+
+.vertical-bar span {
+  width: 72%;
+  min-height: 8px;
+  border-radius: 7px 7px 0 0;
+  background: linear-gradient(180deg, #9b6bd3 0%, #7c2abf 100%);
+}
+
+.vertical-bar strong {
+  color: #6a849c;
+  font-size: 0.72rem;
+  line-height: 1;
+}
+
+.vertical-bar small {
+  align-self: start;
+  max-width: 76px;
+  overflow: hidden;
+  color: #55728e;
+  font-size: 0.68rem;
+  line-height: 1.1;
+  text-align: center;
+  text-overflow: ellipsis;
+}
+
+.city-bars {
+  height: 120px;
+}
+
+.metrics-table-card {
+  height: 430px;
+  display: flex;
+  flex-direction: column;
+}
+
+.metrics-table-scroll {
+  flex: 1;
+  min-height: 0;
+  margin-top: 1rem;
+  overflow: auto;
+  border: 1px solid #d8e4ef;
+  border-radius: 12px;
+}
+
+.metrics-table-scroll :deep(table) {
+  min-width: 620px;
+}
+
+.metrics-table-scroll :deep(thead th) {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.metrics-map-card {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 1100px) {
+  .metrics-kpi-grid-compact {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .metrics-reference-grid,
+  .metrics-bottom-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .metrics-side-stack {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: none;
+  }
+
+  .metrics-line-card {
+    min-height: 480px;
+  }
+
+  .metrics-line-wrap,
+  .metrics-line-svg {
+    min-height: 330px;
+  }
+}
+
+@media (max-width: 720px) {
+  .metrics-kpi-grid-compact,
+  .metrics-side-stack {
+    grid-template-columns: 1fr;
+  }
+
+  .metrics-kpi-grid-compact :deep(.metrics-kpi-card) {
+    min-height: 104px;
+    height: 104px;
+  }
+
+  .metrics-line-card,
+  .compact-chart {
+    min-height: auto;
+  }
+
+  .metrics-line-wrap,
+  .metrics-line-svg {
+    min-height: 280px;
+  }
+
+  .vertical-bars {
+    grid-auto-columns: minmax(62px, 72px);
+  }
+
+  .metrics-table-card {
+    height: 360px;
+  }
+}
+</style>
