@@ -13,6 +13,8 @@ const filtroActivador = ref('')
 const filtroTipo = ref('')
 const filtroLider = ref('')
 const filtroEquipo = ref('')
+const rankingPage = ref(1)
+const rankingPageSize = 10
 const numberFormatter = new Intl.NumberFormat('es-BO')
 const todayParts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]))
 const todayKey = `${todayParts.year}-${todayParts.month}-${todayParts.day}`
@@ -139,8 +141,37 @@ const dashboard = computed(() => {
     semanal: maps.semana.size ? kpis.total / maps.semana.size : 0,
     mensual: maps.mes.size ? kpis.total / maps.mes.size : 0,
   }
-  return { rows, points, kpis: { ...kpis, comercios: comerciosUnicos.size }, promedios, activadoresUnicos: activadoresUnicos.size, porEquipo, resumenEquipoMes, porDia: ranking(maps.dia).sort((a, b) => a.label.localeCompare(b.label)), porPlaza: ranking(maps.plaza), topActivadores: ranking(maps.activador, 10), porTipo: ranking(maps.tipo), porClasificacion: ranking(maps.clasificacion), topLideres: ranking(maps.lider, 10) }
+  return { rows, points, kpis: { ...kpis, comercios: comerciosUnicos.size }, promedios, activadoresUnicos: activadoresUnicos.size, porEquipo, resumenEquipoMes, porDia: ranking(maps.dia).sort((a, b) => a.label.localeCompare(b.label)), porPlaza: ranking(maps.plaza), topActivadores: ranking(maps.activador), porTipo: ranking(maps.tipo), porClasificacion: ranking(maps.clasificacion), topLideres: ranking(maps.lider, 10) }
 })
+
+const equipoMesHeatmap = computed(() => {
+  const meses = [...new Set(dashboard.value.resumenEquipoMes.map((item) => item.mes))].sort((a, b) => a.localeCompare(b))
+  const equipos = new Map()
+  const totals = Object.fromEntries(meses.map((mes) => [mes, 0]))
+  let grandTotal = 0
+  let max = 0
+  for (const item of dashboard.value.resumenEquipoMes) {
+    const equipo = equipos.get(item.equipo) ?? { equipo: item.equipo, byMonth: Object.fromEntries(meses.map((mes) => [mes, 0])), total: 0 }
+    equipo.byMonth[item.mes] = (equipo.byMonth[item.mes] ?? 0) + item.total
+    equipo.total += item.total
+    totals[item.mes] = (totals[item.mes] ?? 0) + item.total
+    grandTotal += item.total
+    max = Math.max(max, equipo.byMonth[item.mes])
+    equipos.set(item.equipo, equipo)
+  }
+  const rows = [...equipos.values()]
+    .map((item) => ({ equipo: item.equipo, values: meses.map((mes) => ({ mes, value: item.byMonth[mes] ?? 0 })), total: item.total }))
+    .sort((a, b) => b.total - a.total || a.equipo.localeCompare(b.equipo, 'es'))
+  return { meses, rows, totals, grandTotal, max }
+})
+
+const rankingTotalPages = computed(() => Math.max(1, Math.ceil(dashboard.value.topActivadores.length / rankingPageSize)))
+const rankingSafePage = computed(() => Math.min(rankingPage.value, rankingTotalPages.value))
+const rankingPaginado = computed(() => {
+  const start = (rankingSafePage.value - 1) * rankingPageSize
+  return dashboard.value.topActivadores.slice(start, start + rankingPageSize)
+})
+const rankingStartIndex = computed(() => (rankingSafePage.value - 1) * rankingPageSize)
 
 const lineChart = computed(() => {
   const data = dashboard.value.porDia
@@ -167,6 +198,14 @@ const hayFiltros = computed(() => Boolean(filtroDesde.value || filtroHasta.value
 function limpiarFiltros() { filtroDesde.value = ''; filtroHasta.value = ''; filtroPlaza.value = ''; filtroActivador.value = ''; filtroTipo.value = ''; filtroLider.value = ''; filtroEquipo.value = '' }
 function anchoBarra(value, values) { const max = Math.max(1, ...values.map((item) => item.value)); return `${Math.max(3, (value / max) * 100)}%` }
 function barHeight(value, values) { const max = Math.max(1, ...values.map((item) => item.value)); return `${Math.max(8, (value / max) * 100)}%` }
+function heatCellStyle(value) {
+  const max = Math.max(1, equipoMesHeatmap.value.max)
+  const ratio = Number(value) > 0 ? Number(value) / max : 0
+  const opacity = ratio ? 0.16 + ratio * 0.64 : 0.04
+  return { background: `rgba(23, 105, 255, ${opacity})`, color: ratio > 0.55 ? '#ffffff' : '#143b5e' }
+}
+function rankingAnterior() { rankingPage.value = Math.max(1, rankingSafePage.value - 1) }
+function rankingSiguiente() { rankingPage.value = Math.min(rankingTotalPages.value, rankingSafePage.value + 1) }
 function exportarDashboard() {
   if (!dashboard.value.rows.length) return
   const escape = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`
@@ -200,8 +239,8 @@ function exportarDashboard() {
         <article class="metrics-chart-card metrics-small-chart"><h3>Líderes</h3><p>Registros asociados a líderes disponibles.</p><div v-if="dashboard.topLideres.length" class="dashboard-bars compact-bars"><div v-for="item in dashboard.topLideres.slice(0, 8)" :key="item.label" class="dashboard-bar-row" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><span>{{ item.label }}</span><div class="metric-track"><div class="metric-fill" :style="{ width: anchoBarra(item.value, dashboard.topLideres) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div><p v-else class="metrics-empty-small">Sin líderes resolubles.</p></article>
       </section>
       <section class="metrics-bottom-grid">
-        <article class="metrics-chart-card metrics-table-card"><h3>Resumen Equipos</h3><p>Consolidado mensual con activaciones, activadores y comercios por equipo.</p><div class="table-wrap metrics-table-scroll"><table class="tabla-activaciones"><thead><tr><th>Mes</th><th>Equipo</th><th>Total</th><th>Activadores</th><th>Comercios</th><th>Errores</th></tr></thead><tbody><tr v-for="item in dashboard.resumenEquipoMes" :key="`${item.equipo}-${item.mes}`" :title="`${item.equipo} · ${formatMonth(item.mes)}: ${formatNumber(item.total)} activaciones`"><td>{{ formatMonth(item.mes) }}</td><td>{{ item.equipo }}</td><td>{{ formatNumber(item.total) }}</td><td>{{ formatNumber(item.activadores) }}</td><td>{{ formatNumber(item.comercios) }}</td><td>{{ formatNumber(item.errores) }}</td></tr></tbody></table></div></article>
-        <article class="metrics-chart-card metrics-table-card"><h3>Ranking Activadores</h3><p>Mayor volumen de registros del corte.</p><div class="table-wrap metrics-table-scroll"><table class="tabla-activaciones"><thead><tr><th>#</th><th>Activador</th><th>Activaciones</th></tr></thead><tbody><tr v-for="(item, index) in dashboard.topActivadores" :key="item.label" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><td>{{ index + 1 }}</td><td>{{ item.label }}</td><td>{{ formatNumber(item.value) }}</td></tr></tbody></table></div></article>
+        <article class="metrics-chart-card metrics-table-card"><h3>Resumen Equipo y Activadores</h3><p>Matriz de activaciones por equipo y mes del rango filtrado.</p><div class="table-wrap metrics-table-scroll heatmap-table-wrap"><table class="tabla-activaciones metrics-heat-table"><thead><tr><th class="sticky-col">Equipo</th><th v-for="mes in equipoMesHeatmap.meses" :key="mes">{{ formatMonth(mes) }}</th><th>Total</th></tr></thead><tbody><tr v-for="row in equipoMesHeatmap.rows" :key="row.equipo"><td class="sticky-col heat-team-name">{{ row.equipo }}</td><td v-for="cell in row.values" :key="`${row.equipo}-${cell.mes}`" class="heat-cell" :style="heatCellStyle(cell.value)" :title="`${row.equipo} · ${formatMonth(cell.mes)}: ${formatNumber(cell.value)} activaciones`">{{ formatNumber(cell.value) }}</td><td class="heat-total">{{ formatNumber(row.total) }}</td></tr></tbody><tfoot><tr><th class="sticky-col">Total</th><td v-for="mes in equipoMesHeatmap.meses" :key="`total-${mes}`" class="heat-total">{{ formatNumber(equipoMesHeatmap.totals[mes]) }}</td><td class="heat-grand-total">{{ formatNumber(equipoMesHeatmap.grandTotal) }}</td></tr></tfoot></table></div></article>
+        <article class="metrics-chart-card metrics-table-card"><h3>Ranking Activadores</h3><p>Ordenado por activaciones del corte filtrado.</p><div class="table-wrap metrics-table-scroll ranking-table-wrap"><table class="tabla-activaciones metrics-ranking-table"><thead><tr><th>#</th><th>Activador</th><th>Activaciones</th></tr></thead><tbody><tr v-for="(item, index) in rankingPaginado" :key="item.label" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><td>{{ rankingStartIndex + index + 1 }}</td><td>{{ item.label }}</td><td><div class="ranking-activation-cell"><span class="ranking-fill" :style="{ width: anchoBarra(item.value, dashboard.topActivadores) }"></span><strong>{{ formatNumber(item.value) }}</strong></div></td></tr></tbody></table></div><div v-if="dashboard.topActivadores.length > rankingPageSize" class="ranking-pagination"><button class="boton boton-pequeno" :disabled="rankingSafePage <= 1" @click="rankingAnterior">Anterior</button><span>{{ rankingStartIndex + 1 }}-{{ Math.min(rankingStartIndex + rankingPageSize, dashboard.topActivadores.length) }} / {{ formatNumber(dashboard.topActivadores.length) }}</span><button class="boton boton-pequeno" :disabled="rankingSafePage >= rankingTotalPages" @click="rankingSiguiente">Siguiente</button></div></article>
       </section>
       <article class="metrics-chart-card metrics-map-card"><div class="metrics-card-heading"><div><h3>Mapa de calor</h3><p>Concentración geográfica de activaciones.</p></div><span class="meta-pill">{{ formatNumber(dashboard.points.length) }} puntos</span></div><MetricsHeatMap v-if="dashboard.points.length" :points="dashboard.points" /><p v-else class="panel-empty">No hay coordenadas válidas para este corte.</p></article>
     </div>
@@ -446,6 +485,114 @@ function exportarDashboard() {
   position: sticky;
   top: 0;
   z-index: 1;
+}
+
+.heatmap-table-wrap {
+  overflow: auto;
+}
+
+.metrics-heat-table {
+  min-width: 760px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.metrics-heat-table th,
+.metrics-heat-table td {
+  min-width: 96px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.metrics-heat-table .sticky-col {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  min-width: 150px;
+  text-align: left;
+  background: #f7fbff;
+  box-shadow: 1px 0 0 #d8e4ef;
+}
+
+.metrics-heat-table thead .sticky-col {
+  z-index: 3;
+  background: #edf6ff;
+}
+
+.heat-team-name {
+  color: #143b5e;
+  font-weight: 800;
+}
+
+.heat-cell {
+  border-radius: 8px;
+  font-weight: 800;
+}
+
+.heat-total,
+.heat-grand-total {
+  color: #143b5e;
+  font-weight: 900;
+  background: #eaf3fb;
+}
+
+.metrics-heat-table tfoot th,
+.metrics-heat-table tfoot td {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  border-top: 2px solid var(--ru-primary);
+}
+
+.metrics-ranking-table {
+  min-width: 440px;
+}
+
+.metrics-ranking-table th:first-child,
+.metrics-ranking-table td:first-child {
+  width: 52px;
+  text-align: center;
+}
+
+.ranking-activation-cell {
+  position: relative;
+  min-width: 116px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: #eef5fb;
+  color: #143b5e;
+}
+
+.ranking-activation-cell strong {
+  position: relative;
+  z-index: 1;
+  display: block;
+  padding: 0.35rem 0.55rem;
+  text-align: right;
+}
+
+.ranking-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(23, 105, 255, 0.36), rgba(15, 141, 245, 0.62));
+}
+
+.ranking-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-top: 0.75rem;
+  color: #55728e;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.ranking-pagination .boton-pequeno {
+  min-height: 32px;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.72rem;
 }
 
 .metrics-map-card {
