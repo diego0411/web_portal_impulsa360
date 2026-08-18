@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { adminApiRequest } from '../lib/adminApiClient'
 import { useAuth } from '../lib/authStore'
 import { notifyError, notifySuccess, notifyWarning } from '../lib/feedback'
+import { deduplicarPlazasCatalogo } from '../lib/plazas'
 
 const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(/\/$/, '')
 const { session } = useAuth()
@@ -16,8 +17,9 @@ const edicion = ref({})
 const detalle = ref(null)
 
 const lideres = computed(() => usuarios.value.filter((u) => u.rol === 'lider' && u.estado === 'activo'))
+const plazasCatalogo = computed(() => deduplicarPlazasCatalogo(catalogo.value.plazas))
 const usuariosPorId = computed(() => Object.fromEntries(usuarios.value.map((u) => [u.usuario_id, u])))
-const plazasPorId = computed(() => Object.fromEntries(catalogo.value.plazas.map((p) => [p.id, p])))
+const plazasPorId = computed(() => Object.fromEntries(plazasCatalogo.value.map((p) => [p.id, p])))
 const facturadoresPorId = computed(() => Object.fromEntries(catalogo.value.facturadores.map((f) => [f.id, f])))
 
 function request(path, options = {}) {
@@ -90,7 +92,7 @@ onMounted(cargar)
     <p v-if="catalogo.message" class="panel-empty">{{ catalogo.message }}</p>
     <div v-if="catalogo.available" class="forms-grid">
       <div class="formulario-registro"><h2 class="subtitulo">Crear equipo</h2><form class="formulario-campos" @submit.prevent="crear">
-        <select v-model="nuevo.plaza_id" class="input-texto"><option value="">Plaza</option><option v-for="item in catalogo.plazas" :key="item.id" :value="item.id">{{ item.nombre }}</option></select>
+        <select v-model="nuevo.plaza_id" class="input-texto"><option value="">Plaza</option><option v-for="item in plazasCatalogo" :key="item.id" :value="item.id">{{ item.nombre }}</option></select>
         <select v-model="nuevo.facturador_id" class="input-texto"><option value="">Facturador</option><option v-for="item in catalogo.facturadores" :key="item.id" :value="item.id">{{ item.nombre }}</option></select>
         <select v-model="nuevo.lider_id" class="input-texto"><option value="">Sin lider</option><option v-for="item in lideres" :key="item.usuario_id" :value="item.usuario_id">{{ item.nombre }}</option></select>
         <button class="boton boton-primario" :disabled="procesando">Crear equipo</button>

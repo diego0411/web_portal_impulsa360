@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabaseClient'
 import { AUTH_ENABLED } from '../lib/featureFlags'
 import { containsNormalized } from '../lib/textUtils'
 import { notifyError, notifyInfo, notifySuccess } from '../lib/feedback'
+import { deduplicarPlazas, mismaPlaza, nombreLegiblePlaza } from '../lib/plazas'
 
 const impulsadores = ref([])
 const loading = ref(true)
@@ -18,7 +19,7 @@ const filtroFacturador = ref('')
 const filtroEstado = ref('')
 const exportandoExcel = ref(false)
 
-const plazas = computed(() => [...new Set(impulsadores.value.map((i) => i.plaza_nombre || i.plaza_base || i.plaza).filter(Boolean))].sort())
+const plazas = computed(() => deduplicarPlazas(impulsadores.value.map((i) => i.plaza_nombre || i.plaza_base || i.plaza)))
 const equipos = computed(() => [...new Map(impulsadores.value.filter((i) => i.equipo_numero).map((i) => [String(i.equipo_numero), `#${i.equipo_numero} - ${i.equipo_nombre || 'Equipo'}`])).entries()])
 const lideres = computed(() => [...new Map(impulsadores.value.filter((i) => i.lider_id).map((i) => [i.lider_id, nombreLider(i)])).entries()])
 const facturadores = computed(() => [...new Map(impulsadores.value.filter((i) => i.facturador_id).map((i) => [i.facturador_id, i.facturador_nombre || i.facturador_codigo || 'Facturador'])).entries()])
@@ -32,7 +33,7 @@ const impulsadoresFiltrados = computed(() => {
   return impulsadores.value.filter((impulsador) => {
     const coincideNombre = containsNormalized(impulsador.nombre, filtroNombre.value)
     const coincideEmail = containsNormalized(impulsador.email, filtroEmail.value)
-    const coincidePlaza = !filtroPlaza.value || (impulsador.plaza_nombre || impulsador.plaza_base || impulsador.plaza) === filtroPlaza.value
+    const coincidePlaza = !filtroPlaza.value || mismaPlaza(impulsador.plaza_nombre || impulsador.plaza_base || impulsador.plaza, filtroPlaza.value)
     const coincideEquipo = !filtroEquipo.value || String(impulsador.equipo_numero ?? '') === filtroEquipo.value
     const coincideLider = !filtroLider.value || impulsador.lider_id === filtroLider.value
     const coincideFacturador = !filtroFacturador.value || impulsador.facturador_id === filtroFacturador.value
@@ -46,7 +47,7 @@ const columnasExcel = [
   ['#', (_row, index) => index + 1],
   ['Nombre', (row) => row.nombre],
   ['Email', (row) => row.email],
-  ['Plaza base', (row) => row.plaza_nombre || row.plaza_base || row.plaza],
+  ['Plaza base', (row) => nombreLegiblePlaza(row.plaza_nombre || row.plaza_base || row.plaza)],
   ['Facturador', (row) => row.facturador_nombre || row.facturador_codigo || '-'],
   ['Estado', (row) => row.estado || 'Sin estado'],
   ['Lider', (row) => nombreLider(row)],
@@ -170,7 +171,7 @@ onMounted(async () => {
       </label>
       <label>
         <span class="field-label">Plaza</span>
-        <select v-model="filtroPlaza" class="input-texto"><option value="">Todas</option><option v-for="plaza in plazas" :key="plaza" :value="plaza">{{ plaza }}</option></select>
+        <select v-model="filtroPlaza" class="input-texto"><option value="">Todas</option><option v-for="plaza in plazas" :key="plaza.key" :value="plaza.value">{{ plaza.nombre }}</option></select>
       </label>
       <label><span class="field-label">Equipo</span><select v-model="filtroEquipo" class="input-texto"><option value="">Todos</option><option v-for="[id, nombre] in equipos" :key="id" :value="id">{{ nombre }}</option></select></label>
       <label><span class="field-label">Lider</span><select v-model="filtroLider" class="input-texto"><option value="">Todos</option><option v-for="[id, nombre] in lideres" :key="id" :value="id">{{ nombre }}</option></select></label>
@@ -212,7 +213,7 @@ onMounted(async () => {
             <td>{{ index + 1 }}</td>
             <td>{{ impulsador.nombre }}</td>
             <td>{{ impulsador.email }}</td>
-            <td>{{ impulsador.plaza_nombre || impulsador.plaza_base || impulsador.plaza }}</td>
+            <td>{{ nombreLegiblePlaza(impulsador.plaza_nombre || impulsador.plaza_base || impulsador.plaza) }}</td>
             <td>{{ impulsador.facturador_nombre || impulsador.facturador_codigo || '-' }}</td>
             <td><span class="scope-pill" :class="impulsador.estado === 'inhabilitado' ? 'scope-pill-user' : 'scope-pill-all'">{{ impulsador.estado || 'Sin estado' }}</span></td>
             <td>{{ nombreLider(impulsador) }}</td>

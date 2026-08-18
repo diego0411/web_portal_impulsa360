@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { fetchAllActivaciones } from '../lib/activacionesService'
 import MetricsHeatMap from './MetricsHeatMap.vue'
+import { deduplicarPlazas, mismaPlaza, nombreLegiblePlaza } from '../lib/plazas'
 
 const activaciones = ref([])
 const loading = ref(true)
@@ -35,7 +36,8 @@ onMounted(async () => {
 function texto(value) { return typeof value === 'string' ? value.trim() : '' }
 function normalizado(value) { return texto(value).toLocaleLowerCase('es') }
 function fechaRegistro(item) { return (texto(item.fecha_activacion) || texto(item.created_at)).match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? '' }
-function plazaRegistro(item) { return texto(item.plaza_efectiva_registro) || texto(item.ciudad_activacion) || texto(item.plaza) || 'Sin plaza' }
+function plazaRegistro(item) { return nombreLegiblePlaza(texto(item.plaza_efectiva_registro) || texto(item.ciudad_activacion) || texto(item.plaza) || 'Sin plaza') }
+function plazaFiltroRegistro(item) { return texto(item.plaza_efectiva_registro) || texto(item.ciudad_activacion) || texto(item.plaza) || 'Sin plaza' }
 function liderRegistro(item) { return texto(item.lider_nombre_registro) || texto(item.lider_nombre) || texto(item.lider) || texto(item.nombre_lider) || '' }
 function equipoRegistro(item) { return item.equipo_numero_registro ? `Equipo #${item.equipo_numero_registro}` : texto(item.equipo_nombre_registro) || 'Sin equipo' }
 function comercioRegistro(item) { return texto(item.nombre_comercio) || texto(item.comercio) || texto(item.cliente) || texto(item.nombres_cliente) }
@@ -73,7 +75,7 @@ const opciones = computed(() => {
     equipos.add(equipoRegistro(item))
   }
   const ordenar = (values) => [...values].sort((a, b) => a.localeCompare(b, 'es'))
-  return { plazas: ordenar(plazas), activadores: ordenar(activadores), tipos: ordenar(tipos), lideres: ordenar(lideres), equipos: ordenar(equipos) }
+  return { plazas: deduplicarPlazas(plazas), activadores: ordenar(activadores), tipos: ordenar(tipos), lideres: ordenar(lideres), equipos: ordenar(equipos) }
 })
 
 const dashboard = computed(() => {
@@ -87,6 +89,7 @@ const dashboard = computed(() => {
   const comerciosUnicos = new Set()
   for (const item of activaciones.value) {
     const fecha = fechaRegistro(item), plaza = plazaRegistro(item)
+    const plazaFiltro = plazaFiltroRegistro(item)
     const activador = texto(item.impulsador) || 'Sin activador'
     const tipo = texto(item.tipo_activacion) || 'Sin especificar'
     const lider = liderRegistro(item)
@@ -95,7 +98,7 @@ const dashboard = computed(() => {
     const clasificacion = clasificacionRegistro(item)
     if (filtroDesde.value && (!fecha || fecha < filtroDesde.value)) continue
     if (filtroHasta.value && (!fecha || fecha > filtroHasta.value)) continue
-    if (filtroPlaza.value && plaza !== filtroPlaza.value) continue
+    if (filtroPlaza.value && !mismaPlaza(plazaFiltro, filtroPlaza.value)) continue
     if (activadorQuery && !normalizado(activador).includes(activadorQuery)) continue
     if (filtroTipo.value && tipo !== filtroTipo.value) continue
     if (filtroLider.value && lider !== filtroLider.value) continue
@@ -221,7 +224,7 @@ function exportarDashboard() {
     <header class="metrics-saas-header"><div class="metrics-heading"><p class="view-kicker">Inteligencia Operativa</p><h1 class="view-title">Dashboard de Activaciones</h1><p class="view-description">Una vista clara del volumen, cobertura y desempeño del equipo en campo.</p></div><button class="boton boton-primario" :disabled="loading || !dashboard.rows.length" @click="exportarDashboard">Exportar</button></header>
     <section class="metrics-filter-card"><div class="metrics-filter-head"><div><h2>Filtros</h2><p>{{ formatNumber(dashboard.rows.length) }} de {{ formatNumber(activaciones.length) }} registros</p></div><button class="boton" :disabled="!hayFiltros" @click="limpiarFiltros">Limpiar</button></div><div class="filtros metrics-filter-grid">
       <label><span class="field-label">Fecha desde</span><input v-model="filtroDesde" type="date" class="input-texto"></label><label><span class="field-label">Fecha hasta</span><input v-model="filtroHasta" type="date" class="input-texto"></label>
-      <label><span class="field-label">Plaza / ciudad</span><select v-model="filtroPlaza" class="input-texto"><option value="">Todas</option><option v-for="plaza in opciones.plazas" :key="plaza">{{ plaza }}</option></select></label>
+      <label><span class="field-label">Plaza / ciudad</span><select v-model="filtroPlaza" class="input-texto"><option value="">Todas</option><option v-for="plaza in opciones.plazas" :key="plaza.key" :value="plaza.value">{{ plaza.nombre }}</option></select></label>
       <label><span class="field-label">Activador</span><input v-model="filtroActivador" class="input-texto" list="activadores-dashboard" placeholder="Buscar"><datalist id="activadores-dashboard"><option v-for="item in opciones.activadores" :key="item" :value="item"></option></datalist></label>
       <label><span class="field-label">Equipo</span><select v-model="filtroEquipo" class="input-texto"><option value="">Todos</option><option v-for="item in opciones.equipos" :key="item">{{ item }}</option></select></label>
       <label v-if="opciones.lideres.length"><span class="field-label">Líder</span><select v-model="filtroLider" class="input-texto"><option value="">Todos</option><option v-for="lider in opciones.lideres" :key="lider">{{ lider }}</option></select></label>

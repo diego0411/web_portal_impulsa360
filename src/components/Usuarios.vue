@@ -4,6 +4,7 @@ import { adminApiRequest } from '../lib/adminApiClient'
 import { useAuth } from '../lib/authStore'
 import { notifyError, notifySuccess, notifyWarning, requestConfirmation } from '../lib/feedback'
 import { containsNormalized, isValidEmail, normalizeEmail } from '../lib/textUtils'
+import { deduplicarPlazas, deduplicarPlazasCatalogo, mismaPlaza } from '../lib/plazas'
 
 const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(/\/$/, '')
 const roles = ['activador', 'lider', 'facturador', 'administrador']
@@ -30,9 +31,10 @@ const usuarioPlazaTemporal = ref(null)
 const plazaTemporalForm = ref({ plaza_temporal: '', inicio: '', fin: '', motivo: '' })
 
 const lideresActivos = computed(() => usuarios.value.filter((u) => normalizarRol(u.rol) === 'lider' && (u.estado ?? 'activo') === 'activo'))
+const plazasCatalogo = computed(() => deduplicarPlazasCatalogo(organizacion.value.plazas))
 const plazas = computed(() => organizacion.value.available
-  ? organizacion.value.plazas.map((p) => p.nombre)
-  : [...new Set(usuarios.value.map((u) => u.plaza).filter(Boolean))].sort((a, b) => a.localeCompare(b)))
+  ? plazasCatalogo.value.map((p) => ({ value: p.nombre, nombre: p.nombre }))
+  : deduplicarPlazas(usuarios.value.map((u) => u.plaza_nombre || u.plaza_base || u.plaza)))
 const equiposFiltro = computed(() => organizacion.value.equipos
   .filter((equipo) => equipo.activo)
   .map((equipo) => ({ id: equipo.id, etiqueta: etiquetaEquipo(equipo) })))
@@ -44,7 +46,7 @@ const usuariosFiltrados = computed(() => usuarios.value.filter((u) => {
     u.equipos_asignados?.some((equipo) => equipo.id === filtroEquipoId.value)
   return coincideBusqueda && (!filtroRol.value || normalizarRol(u.rol) === filtroRol.value) &&
     (!filtroEstado.value || (u.estado ?? 'activo') === filtroEstado.value) &&
-    (!filtroPlaza.value || (u.plaza_nombre || u.plaza_base || u.plaza) === filtroPlaza.value) &&
+    (!filtroPlaza.value || mismaPlaza(u.plaza_nombre || u.plaza_base || u.plaza, filtroPlaza.value)) &&
     coincideEquipo
 }))
 
@@ -68,7 +70,7 @@ function liderDelEquipo(form) {
   const equipo = organizacion.value.equipos.find((item) => item.id === form.equipo_id)
   return equipo?.lider_actual_id ? (usuariosPorId.value[equipo.lider_actual_id]?.nombre ?? 'Lider asignado') : 'Sin lider vigente'
 }
-function plazaDelEquipo(equipo) { return organizacion.value.plazas.find((item) => item.id === equipo.plaza_id)?.nombre ?? 'Sin plaza' }
+function plazaDelEquipo(equipo) { return plazasCatalogo.value.find((item) => item.id === equipo.plaza_id)?.nombre ?? 'Sin plaza' }
 function etiquetaEquipo(equipo) { return `#${equipo.numero} · ${plazaDelEquipo(equipo)}` }
 function equiposDelUsuario(usuario) {
   if (esRol(usuario, 'lider')) return usuario.equipos_asignados?.map((e) => `#${e.numero} (${e.plaza || 'Sin plaza'})`).join(', ') || 'Sin equipos'
@@ -81,7 +83,7 @@ function ajustarRol(form) {
 }
 function ajustarPlaza(form) {
   form.equipo_id = ''
-  form.plaza = organizacion.value.plazas.find((item) => item.id === form.plaza_id)?.nombre ?? ''
+  form.plaza = plazasCatalogo.value.find((item) => item.id === form.plaza_id)?.nombre ?? ''
 }
 
 async function cargarUsuarios() {
@@ -228,7 +230,7 @@ onMounted(cargarUsuarios)
           <select v-model="nuevo.rol" class="input-texto" @change="ajustarRol(nuevo)"><option v-for="rol in roles" :key="rol" :value="rol">{{ etiqueta(rol) }}</option></select>
           <select v-model="nuevo.estado" class="input-texto"><option v-for="estado in estados" :key="estado" :value="estado">{{ etiqueta(estado) }}</option></select>
           <template v-if="esRol(nuevo, 'activador')">
-            <select v-if="organizacion.available" v-model="nuevo.plaza_id" class="input-texto" @change="ajustarPlaza(nuevo)"><option value="">Plaza base</option><option v-for="plaza in organizacion.plazas" :key="plaza.id" :value="plaza.id">{{ plaza.nombre }}</option></select>
+            <select v-if="organizacion.available" v-model="nuevo.plaza_id" class="input-texto" @change="ajustarPlaza(nuevo)"><option value="">Plaza base</option><option v-for="plaza in plazasCatalogo" :key="plaza.id" :value="plaza.id">{{ plaza.nombre }}</option></select>
             <input v-else v-model="nuevo.plaza" placeholder="Plaza base" class="input-texto">
             <select v-if="organizacion.available" v-model="nuevo.equipo_id" class="input-texto"><option value="">Equipo</option><option v-for="equipo in equiposPara(nuevo)" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select>
             <span v-if="organizacion.available" class="field-label">Lider: {{ liderDelEquipo(nuevo) }}</span>
@@ -250,7 +252,7 @@ onMounted(cargarUsuarios)
         <label><span class="field-label">Nombre o correo</span><input v-model="busqueda" class="input-texto" placeholder="Buscar usuario"></label>
         <label><span class="field-label">Rol</span><select v-model="filtroRol" class="input-texto"><option value="">Todos</option><option v-for="rol in roles" :key="rol" :value="rol">{{ etiqueta(rol) }}</option></select></label>
         <label><span class="field-label">Estado</span><select v-model="filtroEstado" class="input-texto"><option value="">Todos</option><option v-for="estado in estados" :key="estado" :value="estado">{{ etiqueta(estado) }}</option></select></label>
-        <label><span class="field-label">Plaza</span><select v-model="filtroPlaza" class="input-texto"><option value="">Todas</option><option v-for="item in plazas" :key="item" :value="item">{{ item }}</option></select></label>
+        <label><span class="field-label">Plaza</span><select v-model="filtroPlaza" class="input-texto"><option value="">Todas</option><option v-for="item in plazas" :key="item.value" :value="item.value">{{ item.nombre }}</option></select></label>
         <label v-if="organizacion.available"><span class="field-label">Equipo</span><select v-model="filtroEquipoId" class="input-texto"><option value="">Todos</option><option v-for="equipo in equiposFiltro" :key="equipo.id" :value="equipo.id">{{ equipo.etiqueta }}</option></select></label>
       </div>
       <p v-if="loading">Cargando usuarios...</p><p v-else-if="errorMsg" class="mensaje-error">{{ errorMsg }}</p><p v-else-if="!usuariosFiltrados.length" class="panel-empty">No hay usuarios para los filtros seleccionados.</p>
@@ -259,7 +261,7 @@ onMounted(cargarUsuarios)
           <template v-if="editandoId === usuario.usuario_id">
             <td><input v-model="edicion.nombre" class="input-editar"></td><td><input v-model="edicion.email" type="email" class="input-editar"></td><td>
               <template v-if="esRol(edicion, 'activador')">
-                <select v-if="organizacion.available" v-model="edicion.plaza_id" class="input-editar" @change="ajustarPlaza(edicion)"><option value="">Plaza base</option><option v-for="plaza in organizacion.plazas" :key="plaza.id" :value="plaza.id">{{ plaza.nombre }}</option></select>
+                <select v-if="organizacion.available" v-model="edicion.plaza_id" class="input-editar" @change="ajustarPlaza(edicion)"><option value="">Plaza base</option><option v-for="plaza in plazasCatalogo" :key="plaza.id" :value="plaza.id">{{ plaza.nombre }}</option></select>
                 <input v-else v-model="edicion.plaza" class="input-editar">
               </template><span v-else>-</span>
             </td>
@@ -288,6 +290,6 @@ onMounted(cargarUsuarios)
       </tbody></table></div>
     </div>
     <teleport to="body"><div v-if="modalInhabilitar" class="confirm-overlay" @click.self="cerrarInhabilitacion"><section class="confirm-modal" role="dialog" aria-modal="true" aria-label="Inhabilitar usuario"><h3 class="confirm-title">Inhabilitar usuario</h3><p class="confirm-message">Indica por que se inhabilitara a {{ usuarioAInhabilitar?.nombre ?? 'este usuario' }}.</p><textarea v-model="motivoInhabilitar" class="input-texto" placeholder="Motivo obligatorio" rows="4"></textarea><div class="confirm-actions"><button class="boton boton-cancelar" :disabled="procesando" @click="cerrarInhabilitacion">Cancelar</button><button class="boton boton-eliminar" :disabled="procesando || !motivoInhabilitar.trim()" @click="confirmarInhabilitacion">{{ procesando ? 'Guardando...' : 'Inhabilitar' }}</button></div></section></div></teleport>
-    <teleport to="body"><div v-if="usuarioPlazaTemporal" class="confirm-overlay" @click.self="cerrarPlazaTemporal"><section class="confirm-modal" role="dialog" aria-modal="true" aria-label="Asignar plaza temporal"><h3 class="confirm-title">Plaza temporal</h3><p class="confirm-message">Asignación temporal para {{ usuarioPlazaTemporal.nombre }}. Su plaza base no cambiará.</p><select v-if="organizacion.available" v-model="plazaTemporalForm.plaza_temporal" class="input-texto"><option value="">Plaza temporal</option><option v-for="plaza in organizacion.plazas" :key="plaza.id" :value="plaza.nombre">{{ plaza.nombre }}</option></select><input v-else v-model="plazaTemporalForm.plaza_temporal" class="input-texto" placeholder="Plaza temporal"><label><span class="field-label">Inicio</span><input v-model="plazaTemporalForm.inicio" type="datetime-local" class="input-texto"></label><label><span class="field-label">Fin</span><input v-model="plazaTemporalForm.fin" type="datetime-local" class="input-texto"></label><textarea v-model="plazaTemporalForm.motivo" class="input-texto" placeholder="Motivo obligatorio" rows="3"></textarea><div class="confirm-actions"><button class="boton boton-cancelar" :disabled="procesando" @click="cerrarPlazaTemporal">Cancelar</button><button class="boton boton-guardar" :disabled="procesando" @click="guardarPlazaTemporal">{{ procesando ? 'Guardando...' : 'Asignar' }}</button></div></section></div></teleport>
+    <teleport to="body"><div v-if="usuarioPlazaTemporal" class="confirm-overlay" @click.self="cerrarPlazaTemporal"><section class="confirm-modal" role="dialog" aria-modal="true" aria-label="Asignar plaza temporal"><h3 class="confirm-title">Plaza temporal</h3><p class="confirm-message">Asignación temporal para {{ usuarioPlazaTemporal.nombre }}. Su plaza base no cambiará.</p><select v-if="organizacion.available" v-model="plazaTemporalForm.plaza_temporal" class="input-texto"><option value="">Plaza temporal</option><option v-for="plaza in plazasCatalogo" :key="plaza.id" :value="plaza.nombre">{{ plaza.nombre }}</option></select><input v-else v-model="plazaTemporalForm.plaza_temporal" class="input-texto" placeholder="Plaza temporal"><label><span class="field-label">Inicio</span><input v-model="plazaTemporalForm.inicio" type="datetime-local" class="input-texto"></label><label><span class="field-label">Fin</span><input v-model="plazaTemporalForm.fin" type="datetime-local" class="input-texto"></label><textarea v-model="plazaTemporalForm.motivo" class="input-texto" placeholder="Motivo obligatorio" rows="3"></textarea><div class="confirm-actions"><button class="boton boton-cancelar" :disabled="procesando" @click="cerrarPlazaTemporal">Cancelar</button><button class="boton boton-guardar" :disabled="procesando" @click="guardarPlazaTemporal">{{ procesando ? 'Guardando...' : 'Asignar' }}</button></div></section></div></teleport>
   </section>
 </template>
