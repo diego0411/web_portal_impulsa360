@@ -47,9 +47,10 @@ export function deduplicarPlazas(values) {
   const map = new Map()
   for (const value of values) {
     if (!value) continue
-    const key = normalizarPlazaClave(value)
+    const nombre = nombreLegiblePlaza(value)
+    const key = normalizarPlazaClave(nombre)
     if (!key || map.has(key)) continue
-    map.set(key, { key, value, nombre: nombreLegiblePlaza(value) })
+    map.set(key, { key, value, nombre })
   }
   return [...map.values()].sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
 }
@@ -59,9 +60,10 @@ export function deduplicarPlazasCatalogo(plazas) {
   for (const plaza of plazas ?? []) {
     if (!plaza?.id && !plaza?.nombre) continue
     const sourceName = plaza.nombre_normalizado || plaza.codigo || plaza.nombre || plaza.id
-    const key = normalizarPlazaClave(sourceName)
+    const nombre = nombreLegiblePlaza(plaza.nombre || sourceName)
+    const key = normalizarPlazaClave(nombre)
     if (!key) continue
-    const item = { ...plaza, nombre: nombreLegiblePlaza(plaza.nombre || sourceName) }
+    const item = { ...plaza, nombre }
     const current = byKey.get(key)
     const currentRaw = String(current?.nombre ?? '')
     const itemRaw = String(plaza.nombre ?? '')
