@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { adminApiRequest } from '../lib/adminApiClient'
 import { useAuth } from '../lib/authStore'
-import { notifyError, notifySuccess, notifyWarning } from '../lib/feedback'
+import { notifyError, notifySuccess, notifyWarning, requestConfirmation } from '../lib/feedback'
 import { deduplicarPlazasCatalogo } from '../lib/plazas'
 
 const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(/\/$/, '')
@@ -83,6 +83,18 @@ async function verDetalle(team) {
   } catch (error) { notifyError(errorMessage(error)) }
 }
 
+async function eliminarEquipo(team) {
+  const ok = await requestConfirmation({ title: `Eliminar equipo #${team.numero}`, message: '¿Deseas eliminar este equipo? Si tiene historial se inactivará en lugar de eliminar.' })
+  if (!ok) return
+  procesando.value = true
+  try {
+    const result = await request(`/admin/teams/${team.id}`, { method: 'DELETE' })
+    await cargar()
+    notifySuccess(result.message ?? (result.deleted ? 'Equipo eliminado.' : 'Equipo inactivado.'))
+  } catch (error) { notifyError(errorMessage(error)) }
+  finally { procesando.value = false }
+}
+
 onMounted(cargar)
 </script>
 
@@ -113,7 +125,7 @@ onMounted(cargar)
           <template v-else>
             <td>#{{ team.numero }}</td><td>{{ plazasPorId[team.plaza_id]?.nombre ?? '-' }}</td><td>{{ facturadoresPorId[team.facturador_id]?.nombre ?? '-' }}</td><td>{{ liderNombre(team.lider_actual_id) }}</td><td>{{ team.integrantes }}</td>
             <td><span class="scope-pill" :class="team.activo ? 'scope-pill-all' : 'scope-pill-user'">{{ team.activo ? 'Activo' : 'Inactivo' }}</span></td>
-            <td><button class="boton" @click="verDetalle(team)">Ver</button><button class="boton boton-editar" @click="editar(team)">Editar</button><button class="boton" :disabled="procesando" @click="cambiarEstado(team)">{{ team.activo ? 'Desactivar' : 'Activar' }}</button></td>
+            <td><button class="boton" @click="verDetalle(team)">Ver</button><button class="boton boton-editar" @click="editar(team)">Editar</button><button class="boton" :disabled="procesando" @click="cambiarEstado(team)">{{ team.activo ? 'Desactivar' : 'Activar' }}</button><button class="boton boton-eliminar" :disabled="procesando" @click="eliminarEquipo(team)">Eliminar</button></td>
           </template>
         </tr>
       </tbody></table></div>

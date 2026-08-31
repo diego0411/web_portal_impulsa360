@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { adminApiRequest } from '../lib/adminApiClient'
 import { useAdminApiAuth } from '../lib/adminAuthStore'
 import {
@@ -50,6 +50,20 @@ const canAdminister = computed(() => !AUTH_ENABLED || isAdmin.value)
 const canEditActivaciones = computed(() =>
   AUTH_ENABLED ? Boolean(session.value?.access_token && isAdmin.value) : hasCredentials.value
 )
+
+const opcionesOrg = ref({ available: false, plazas: [] })
+
+async function cargarOpcionesOrg() {
+  try {
+    const result = await requestAdmin('/admin/organization-options')
+    opcionesOrg.value = result
+  } catch (err) {
+    // no bloquear la edición si falla
+    opcionesOrg.value = { available: false, plazas: [] }
+  }
+}
+
+onMounted(() => { if (canEditActivaciones.value) cargarOpcionesOrg() })
 
 function getCiudadActivacion(activacion) {
   return (
@@ -806,7 +820,14 @@ async function descargarExcelPersonalizado() {
               <label><span class="field-label">Nombre del cliente o comercio</span><input v-model="formularioEdicion.nombre" class="input-texto"></label>
               <label><span class="field-label">Telefono</span><input v-model="formularioEdicion.telefono_cliente" class="input-texto" inputmode="tel"></label>
               <label><span class="field-label">Correo</span><input v-model="formularioEdicion.email_cliente" type="email" class="input-texto"></label>
-              <label><span class="field-label">Plaza</span><input v-model="formularioEdicion.plaza" class="input-texto"></label>
+              <label><span class="field-label">Plaza</span>
+                <template v-if="opcionesOrg.available">
+                  <select v-model="formularioEdicion.plaza" class="input-texto"><option value="">Selecciona plaza</option><option v-for="p in opcionesOrg.plazas" :key="p.id" :value="p.nombre">{{ p.nombre }}</option></select>
+                </template>
+                <template v-else>
+                  <input v-model="formularioEdicion.plaza" class="input-texto">
+                </template>
+              </label>
               <label><span class="field-label">Tipo de activacion</span><input v-model="formularioEdicion.tipo_activacion" class="input-texto"></label>
               <label v-if="resultadoEditableKey"><span class="field-label">Resultado o estado</span><input v-model="formularioEdicion.resultado" class="input-texto"></label>
               <label class="edicion-field-wide"><span class="field-label">Observaciones</span><textarea v-model="formularioEdicion.observaciones" class="input-texto" rows="3"></textarea></label>

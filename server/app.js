@@ -29,6 +29,7 @@ const ACTIVATION_EDITABLE_FIELDS = new Set([
 const ALLOWED_STORE_SIZES = new Set(['Pequeña', 'Mediana', 'Grande'])
 const ALLOWED_USER_ROLES = new Set(['activador', 'lider', 'facturador', 'administrador'])
 const ALLOWED_USER_STATES = new Set(['activo', 'inhabilitado'])
+const ALLOWED_TEMPORARY_ZONE_TYPES = new Set(['universidad', 'feria', 'evento', 'campana', 'punto_temporal'])
 const REQUIRED_ENV = [
   'SUPABASE_URL',
   'SUPABASE_SERVICE_ROLE_KEY',
@@ -638,8 +639,8 @@ export function createAdminApiApp({ env = process.env } = {}) {
             : Promise.resolve({ data: [], error: null }),
           userIds.length
             ? adminSupabase.from('activador_plaza_temporal')
-              .select('activador_id,plaza_temporal,inicio,fin,motivo,autorizado_por')
-              .in('activador_id', userIds).lte('inicio', now).gt('fin', now).is('cancelado_at', null)
+              .select('activador_id,plaza_temporal,inicio,fin,motivo,autorizado_por,tipo_zona,ciudad_plaza,activo')
+              .in('activador_id', userIds).lte('inicio', now).gte('fin', now).eq('activo', true).is('cancelado_at', null)
             : Promise.resolve({ data: [], error: null }),
         ])
       if (teamsError && teamIds.length) {
@@ -1266,6 +1267,67 @@ export function createAdminApiApp({ env = process.env } = {}) {
     res.json({ ok: true })
   }))
 
+  app.delete('/admin/teams/:teamId', asyncRoute(async (req, res) => {
+    const teamId = normalizeText(req.params.teamId)
+    if (!teamId) { jsonError(res, 400, 'Parametro teamId requerido.'); return }
+
+    const { data: team, error: teamError } = await adminSupabase.from('equipos').select('*').eq('id', teamId).maybeSingle()
+    if (teamError) { jsonError(res, 500, 'No se pudo leer el equipo.', teamError.message); return }
+    if (!team) { jsonError(res, 404, 'Equipo no encontrado.'); return }
+
+    if (team.activo === false) {
+      res.json({ ok: true, deleted: false, message: 'El equipo ya se encontraba inactivo.' })
+      return
+    }
+
+    // Siempre realizar baja lógica: inactivar el equipo para preservar historial y relaciones
+    const { error: updateErr } = await adminSupabase.from('equipos').update({ activo: false }).eq('id', teamId)
+    if (updateErr) { jsonError(res, 500, 'No se pudo inactivar el equipo.', updateErr.message); return }
+    res.json({ ok: true, deleted: false, message: 'Equipo inactivado.' })
+  }))
+
+  // Plazas: listar, crear, editar (activar/desactivar)
+  app.get('/admin/plazas', asyncRoute(async (_req, res) => {
+    const { data, error } = await adminSupabase.from('plazas').select('id,nombre,nombre_normalizado,activa').order('nombre')
+    if (error) {
+      if (isMissingOrganizationSchema(error)) { jsonError(res, 409, 'El modelo organizacional no esta habilitado.', error.message); return }
+      jsonError(res, 500, 'No se pudo obtener las plazas.', error.message); return
+    }
+    res.json({ plazas: data ?? [] })
+  }))
+
+  app.post('/admin/plazas', asyncRoute(async (req, res) => {
+    const nombre = normalizeText(req.body?.nombre)
+    if (!nombre) { jsonError(res, 400, 'Nombre de plaza requerido.'); return }
+    const nombre_normalizado = normalizeOrganizationName(nombre)
+    try {
+      const { data: existing, error: existingErr } = await adminSupabase.from('plazas').select('id').eq('nombre_normalizado', nombre_normalizado).maybeSingle()
+      if (existingErr) { throw existingErr }
+      if (existing) { jsonError(res, 409, 'Ya existe una plaza con ese nombre.'); return }
+      const { data: created, error: createErr } = await adminSupabase.from('plazas').insert({ nombre, nombre_normalizado }).select('*').single()
+      if (createErr) { throw createErr }
+      res.status(201).json({ plaza: created })
+    } catch (err) {
+      if (isMissingOrganizationSchema(err)) { jsonError(res, 409, 'El modelo organizacional no esta habilitado.', err.message); return }
+      jsonError(res, 500, 'No se pudo crear la plaza.', err.message)
+    }
+  }))
+
+  app.patch('/admin/plazas/:plazaId', asyncRoute(async (req, res) => {
+    const plazaId = normalizeText(req.params.plazaId)
+    if (!plazaId) { jsonError(res, 400, 'Parametro plazaId requerido.'); return }
+    const nombre = normalizeNullableText(req.body?.nombre)
+    const activa = req.body?.activa
+    const updates = {}
+    if (nombre != null) updates.nombre = nombre
+    if (typeof activa === 'boolean') updates.activa = activa
+    if (Object.keys(updates).length === 0) { jsonError(res, 400, 'Nada que actualizar.'); return }
+    if (updates.nombre) updates.nombre_normalizado = normalizeOrganizationName(updates.nombre)
+    const { error } = await adminSupabase.from('plazas').update(updates).eq('id', plazaId)
+    if (error) { jsonError(res, 500, 'No se pudo actualizar la plaza.', error.message); return }
+    res.json({ ok: true })
+  }))
+
   app.post(
     '/admin/users/:userId/temporary-plaza',
     asyncRoute(async (req, res) => {
@@ -1274,9 +1336,16 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const inicio = new Date(req.body?.inicio)
       const fin = new Date(req.body?.fin)
       const motivo = normalizeText(req.body?.motivo)
+      const tipoZona = normalizeText(req.body?.tipo_zona) || 'punto_temporal'
+      const ciudadPlaza = normalizeNullableText(req.body?.ciudad_plaza)
+      const activo = req.body?.activo !== false
       const authorizedBy = req.portalUser?.usuario_id
       if (!userId || !plazaTemporal || !motivo || Number.isNaN(inicio.getTime()) || Number.isNaN(fin.getTime()) || fin <= inicio) {
         jsonError(res, 400, 'activador, plaza temporal, inicio, fin y motivo validos son obligatorios.')
+        return
+      }
+      if (!ALLOWED_TEMPORARY_ZONE_TYPES.has(tipoZona)) {
+        jsonError(res, 400, 'tipo_zona invalido.')
         return
       }
 
@@ -1297,6 +1366,9 @@ export function createAdminApiApp({ env = process.env } = {}) {
         inicio: inicio.toISOString(),
         fin: fin.toISOString(),
         motivo,
+        tipo_zona: tipoZona,
+        ciudad_plaza: ciudadPlaza,
+        activo,
         autorizado_por: authorizedBy,
       }
       if (temporaryPlazaId) temporaryPayload.plaza_temporal_id = temporaryPlazaId
@@ -1327,7 +1399,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const { error } = await adminSupabase.from('activador_plaza_temporal').update({
         cancelado_at: now,
         cancelado_por: authorizedBy,
-      }).eq('activador_id', req.params.userId).is('cancelado_at', null).lte('inicio', now).gt('fin', now)
+      }).eq('activador_id', req.params.userId).is('cancelado_at', null).lte('inicio', now).gte('fin', now)
       if (error) {
         if (isMissingOrganizationSchema(error)) {
           jsonError(res, 409, 'No hay una asignacion temporal administrable en el esquema actual.')
