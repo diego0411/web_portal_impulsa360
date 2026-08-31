@@ -37,76 +37,69 @@ const REQUIRED_ENV = [
   'ADMIN_BASIC_PASS',
 ]
 const DEFAULT_ALLOWED_ORIGINS = [
-  'http://localhost:5173',
-  'http://localhost:5174',
-]
-const MB = 1024 * 1024
-const GB = 1024 * MB
-const SUPABASE_FREE_PLAN_REFERENCE = Object.freeze({
-  name: 'Supabase Free',
-  api_requests: 'Unlimited API requests',
-  monthly_active_users_limit: 50000,
-  database_limit_bytes: 500 * MB,
-  shared_ram_mb: 500,
-  cpu_tier: 'shared',
-  egress_limit_bytes: 5 * GB,
-  cached_egress_limit_bytes: 5 * GB,
-  file_storage_limit_bytes: 1 * GB,
-  support: 'Community support',
-})
-const INTERNAL_TEAM_NAME = 'Equipo administrativo'
+    try {
+      // Realizar conteos separados por tabla/columna
+      const equiposRes = await adminSupabase.from('equipos').select('id', { count: 'exact', head: true }).eq('plaza_id', plazaId)
+      const activadoresPlazaIdRes = await adminSupabase.from('activadores').select('usuario_id', { count: 'exact', head: true }).eq('plaza_id', plazaId)
+      const activadoresPlazaBaseRes = await adminSupabase.from('activadores').select('plaza_base', { count: 'exact', head: true }).eq('plaza_base', plazaId)
+      const activacionesPlazaIdRes = await adminSupabase.from('activaciones').select('id', { count: 'exact', head: true }).eq('plaza_id_registro', plazaId)
+      const activacionesPlazaBaseIdRes = await adminSupabase.from('activaciones').select('id', { count: 'exact', head: true }).eq('plaza_base_id_registro', plazaId)
+      const activacionesPlazaEfectivaIdRes = await adminSupabase.from('activaciones').select('id', { count: 'exact', head: true }).eq('plaza_efectiva_id_registro', plazaId)
+      const temporalesRes = await adminSupabase.from('activador_plaza_temporal').select('id', { count: 'exact', head: true }).eq('plaza_temporal_id', plazaId)
 
-function normalizeText(value) {
-  return typeof value === 'string' ? value.trim() : ''
-}
+      const relations = []
 
-function normalizeNullableText(value) {
-  const normalized = normalizeText(value)
-  return normalized || null
-}
+      if (equiposRes.error) relations.push({ table: 'equipos', column: 'plaza_id', error: true })
+      else if ((equiposRes.count ?? 0) > 0) relations.push({ table: 'equipos', column: 'plaza_id', count: equiposRes.count ?? 0 })
 
-function normalizeOrganizationName(value) {
-  return normalizeText(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-}
+      if (activadoresPlazaIdRes.error) relations.push({ table: 'activadores', column: 'plaza_id', error: true })
+      else if ((activadoresPlazaIdRes.count ?? 0) > 0) relations.push({ table: 'activadores', column: 'plaza_id', count: activadoresPlazaIdRes.count ?? 0 })
 
-function normalizeEmail(value) {
-  return normalizeText(value).toLowerCase()
-}
+      // Detectar si plaza_base almacena UUID o texto sin exponer datos
+      let plazaBaseType = 'unknown'
+      try {
+        const sampleValues = await adminSupabase.from('activadores').select('plaza_base').not('plaza_base', 'is', null).limit(10)
+        const values = (sampleValues.data ?? []).map((r) => r.plaza_base).filter(Boolean)
+        const uuidLike = values.some((v) => typeof v === 'string' && /^[0-9a-fA-F-]{36}$/.test(v))
+        plazaBaseType = uuidLike ? 'uuid' : 'text'
+      } catch (_e) {
+        plazaBaseType = 'unknown'
+      }
 
-function isValidEmail(value) {
-  return EMAIL_REGEX.test(normalizeEmail(value))
-}
+      if (activadoresPlazaBaseRes.error) relations.push({ table: 'activadores', column: 'plaza_base', error: true })
+      else if (plazaBaseType === 'uuid') {
+        if ((activadoresPlazaBaseRes.count ?? 0) > 0) relations.push({ table: 'activadores', column: 'plaza_base', count: activadoresPlazaBaseRes.count ?? 0 })
+      } else if (plazaBaseType === 'text') {
+        // Si plaza_base es texto, no tratarla como FK a plaza.id; omitir la relación
+      } else {
+        // tipo desconocido: conservadormente marcar como posible error
+        if ((activadoresPlazaBaseRes.count ?? 0) > 0) relations.push({ table: 'activadores', column: 'plaza_base', error: true })
+      }
 
-function isStrongPassword(value) {
-  return typeof value === 'string' && value.length >= 10 && /[A-Z]/.test(value) && /[a-z]/.test(value) && /[0-9]/.test(value) && /[^A-Za-z0-9]/.test(value)
-}
+      if (activacionesPlazaIdRes.error) relations.push({ table: 'activaciones', column: 'plaza_id_registro', error: true })
+      else if ((activacionesPlazaIdRes.count ?? 0) > 0) relations.push({ table: 'activaciones', column: 'plaza_id_registro', count: activacionesPlazaIdRes.count ?? 0 })
 
-function isMissingOrganizationSchema(error) {
-  const code = String(error?.code ?? '')
-  const message = String(error?.message ?? '').toLowerCase()
-  return ['42P01', 'PGRST200', 'PGRST202', 'PGRST204', 'PGRST205'].includes(code) ||
-    message.includes('schema cache') || message.includes('does not exist') || message.includes('could not find the table')
-}
+      if (activacionesPlazaBaseIdRes.error) relations.push({ table: 'activaciones', column: 'plaza_base_id_registro', error: true })
+      else if ((activacionesPlazaBaseIdRes.count ?? 0) > 0) relations.push({ table: 'activaciones', column: 'plaza_base_id_registro', count: activacionesPlazaBaseIdRes.count ?? 0 })
 
-export function resolvePort(rawValue) {
-  const parsedPort = Number(rawValue ?? 8787)
-  if (!Number.isInteger(parsedPort) || parsedPort <= 0) {
-    return 8787
-  }
-  return parsedPort
-}
+      if (activacionesPlazaEfectivaIdRes.error) relations.push({ table: 'activaciones', column: 'plaza_efectiva_id_registro', error: true })
+      else if ((activacionesPlazaEfectivaIdRes.count ?? 0) > 0) relations.push({ table: 'activaciones', column: 'plaza_efectiva_id_registro', count: activacionesPlazaEfectivaIdRes.count ?? 0 })
 
-function assertRequiredEnv(env) {
-  for (const envName of REQUIRED_ENV) {
-    if (!env[envName]) {
-      throw new Error(`Falta variable de entorno requerida: ${envName}`)
+      if (temporalesRes.error) relations.push({ table: 'activador_plaza_temporal', column: 'plaza_temporal_id', error: true })
+      else if ((temporalesRes.count ?? 0) > 0) relations.push({ table: 'activador_plaza_temporal', column: 'plaza_temporal_id', count: temporalesRes.count ?? 0 })
+
+      if (relations.length > 0) {
+        res.status(409).json({ ok: false, deleted: false, message: 'No se puede eliminar la plaza porque tiene información relacionada.', relations })
+        return
+      }
+
+      // No se encontraron relaciones: permitir eliminación física
+      const { error: delErr } = await adminSupabase.from('plazas').delete().eq('id', plazaId)
+      if (delErr) { jsonError(res, 500, 'No se pudo eliminar la plaza.', delErr.message); return }
+      res.json({ ok: true, deleted: true, message: 'Plaza eliminada correctamente.' })
+    } catch (err) {
+      jsonError(res, 500, 'Error verificando relaciones de plaza.', err?.message ?? String(err))
     }
-  }
-}
-
-function buildAllowedOrigins(rawValue) {
-  if (typeof rawValue !== 'string' || !rawValue.trim()) {
-    return DEFAULT_ALLOWED_ORIGINS
   }
 
   return rawValue
