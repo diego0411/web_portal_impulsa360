@@ -1325,11 +1325,47 @@ export function createAdminApiApp({ env = process.env } = {}) {
     if (updates.nombre) updates.nombre_normalizado = normalizeOrganizationName(updates.nombre)
     const { error } = await adminSupabase.from('plazas').update(updates).eq('id', plazaId)
     if (error) { jsonError(res, 500, 'No se pudo actualizar la plaza.', error.message); return }
-    res.json({ ok: true })
-  }))
 
-  app.delete('/admin/plazas/:plazaId', asyncRoute(async (req, res) => {
-    const plazaId = normalizeText(req.params.plazaId)
+    // Verificar relaciones reales antes de eliminar físicamente
+    try {
+      const [
+        { data: equipos, error: equiposErr },
+        { data: activadoresRows, error: activadoresErr },
+        { data: activacionesRows, error: activacionesErr },
+        { data: temporales, error: temporalesErr }
+      ] = await Promise.all([
+        adminSupabase.from('equipos').select('id').eq('plaza_id', plazaId).limit(1),
+        adminSupabase.from('activadores').select('usuario_id').or(`plaza_id.eq.${plazaId},plaza_base.eq.${plazaId}`).limit(1),
+        adminSupabase.from('activaciones').select('id').or(`plaza_id_registro.eq.${plazaId},plaza_base_id_registro.eq.${plazaId},plaza_efectiva_id_registro.eq.${plazaId}`).limit(1),
+        adminSupabase.from('activador_plaza_temporal').select('id').eq('plaza_temporal_id', plazaId).limit(1),
+      ])
+
+      if (equiposErr || activadoresErr || activacionesErr || temporalesErr) {
+        const err = equiposErr || activadoresErr || activacionesErr || temporalesErr
+        if (isMissingOrganizationSchema(err)) {
+          // No podemos verificar relaciones correctamente: bloquear eliminación y pedir desactivación
+          res.status(409).json({ ok: false, deleted: false, message: 'No se puede eliminar la plaza porque tiene información relacionada. Puedes desactivarla.' })
+          return
+        }
+        jsonError(res, 500, 'No se pudo verificar relaciones de la plaza.', err.message); return
+      }
+
+      const hasRelations = (equipos ?? []).length > 0 || (activadoresRows ?? []).length > 0 || (activacionesRows ?? []).length > 0 || (temporales ?? []).length > 0
+
+      if (hasRelations) {
+        // Si existe cualquier relación o histórico, bloquear eliminación física
+        res.status(409).json({ ok: false, deleted: false, message: 'No se puede eliminar la plaza porque tiene información relacionada. Puedes desactivarla.' })
+        return
+      }
+
+      // Sin relaciones: eliminar físicamente
+      const { error: delErr } = await adminSupabase.from('plazas').delete().eq('id', plazaId)
+      if (delErr) { jsonError(res, 500, 'No se pudo eliminar la plaza.', delErr.message); return }
+      res.json({ ok: true, deleted: true, message: 'Plaza eliminada correctamente.' })
+
+    } catch (err) {
+      jsonError(res, 500, 'Error verificando relaciones de plaza.', err?.message ?? String(err))
+    }
     if (!plazaId) { jsonError(res, 400, 'Parametro plazaId requerido.'); return }
 
     const { data: plaza, error: plazaErr } = await adminSupabase.from('plazas').select('*').eq('id', plazaId).maybeSingle()

@@ -65,7 +65,7 @@ async function cambiarEstado(plaza) {
 }
 
 async function eliminarPlaza(plaza) {
-  const confirm = window.confirm(`Eliminar plaza "${plaza.nombre}"? Si tiene datos relacionados se inactivará.`)
+  const confirm = window.confirm(`Eliminar plaza "${plaza.nombre}"? Esta acción intentará eliminarla físicamente y fallará si tiene datos relacionados.`)
   if (!confirm) return
   eliminandoId.value = plaza.id
   procesando.value = true
