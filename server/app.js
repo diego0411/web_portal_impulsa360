@@ -37,6 +37,9 @@ const REQUIRED_ENV = [
   'ADMIN_BASIC_PASS',
 ]
 const DEFAULT_ALLOWED_ORIGINS = [
+  'http://localhost:5173',
+  'http://localhost:5174',
+  /* Bloque desplazado accidentalmente; se conserva comentado hasta retirarlo del diff.
     try {
       // Realizar conteos separados por tabla/columna
       const equiposRes = await adminSupabase.from('equipos').select('id', { count: 'exact', head: true }).eq('plaza_id', plazaId)
@@ -100,6 +103,77 @@ const DEFAULT_ALLOWED_ORIGINS = [
     } catch (err) {
       jsonError(res, 500, 'Error verificando relaciones de plaza.', err?.message ?? String(err))
     }
+  }
+
+  */
+]
+const MB = 1024 * 1024
+const GB = 1024 * MB
+const SUPABASE_FREE_PLAN_REFERENCE = Object.freeze({
+  name: 'Supabase Free',
+  api_requests: 'Unlimited API requests',
+  monthly_active_users_limit: 50000,
+  database_limit_bytes: 500 * MB,
+  shared_ram_mb: 500,
+  cpu_tier: 'shared',
+  egress_limit_bytes: 5 * GB,
+  cached_egress_limit_bytes: 5 * GB,
+  file_storage_limit_bytes: 1 * GB,
+  support: 'Community support',
+})
+const INTERNAL_TEAM_NAME = 'Equipo administrativo'
+
+function normalizeText(value) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function normalizeNullableText(value) {
+  const normalized = normalizeText(value)
+  return normalized || null
+}
+
+function normalizeOrganizationName(value) {
+  return normalizeText(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+}
+
+function normalizeEmail(value) {
+  return normalizeText(value).toLowerCase()
+}
+
+function isValidEmail(value) {
+  return EMAIL_REGEX.test(normalizeEmail(value))
+}
+
+function isStrongPassword(value) {
+  return typeof value === 'string' && value.length >= 10 && /[A-Z]/.test(value) && /[a-z]/.test(value) && /[0-9]/.test(value) && /[^A-Za-z0-9]/.test(value)
+}
+
+function isMissingOrganizationSchema(error) {
+  const code = String(error?.code ?? '')
+  const message = String(error?.message ?? '').toLowerCase()
+  return ['42P01', 'PGRST200', 'PGRST202', 'PGRST204', 'PGRST205'].includes(code) ||
+    message.includes('schema cache') || message.includes('does not exist') || message.includes('could not find the table')
+}
+
+export function resolvePort(rawValue) {
+  const parsedPort = Number(rawValue ?? 8787)
+  if (!Number.isInteger(parsedPort) || parsedPort <= 0) {
+    return 8787
+  }
+  return parsedPort
+}
+
+function assertRequiredEnv(env) {
+  for (const envName of REQUIRED_ENV) {
+    if (!env[envName]) {
+      throw new Error(`Falta variable de entorno requerida: ${envName}`)
+    }
+  }
+}
+
+function buildAllowedOrigins(rawValue) {
+  if (typeof rawValue !== 'string' || !rawValue.trim()) {
+    return DEFAULT_ALLOWED_ORIGINS
   }
 
   return rawValue
@@ -1269,25 +1343,23 @@ export function createAdminApiApp({ env = process.env } = {}) {
     if (!plaza) { jsonError(res, 404, 'Plaza no encontrada.'); return }
 
     try {
-      const [
-        { data: equipos, error: equiposErr },
-        { data: activadoresRows, error: activadoresErr },
-        { data: activacionesRows, error: activacionesErr },
-        { data: temporales, error: temporalesErr }
-      ] = await Promise.all([
-        adminSupabase.from('equipos').select('id').eq('plaza_id', plazaId).limit(1),
-        adminSupabase.from('activadores').select('usuario_id').or(`plaza_id.eq.${plazaId},plaza_base.eq.${plazaId}`).limit(1),
-        adminSupabase.from('activaciones').select('id').or(`plaza_id_registro.eq.${plazaId},plaza_base_id_registro.eq.${plazaId},plaza_efectiva_id_registro.eq.${plazaId}`).limit(1),
-        adminSupabase.from('activador_plaza_temporal').select('id').eq('plaza_temporal_id', plazaId).limit(1),
+      const relationChecks = await Promise.all([
+        adminSupabase.from('equipos').select('id', { count: 'exact', head: true }).eq('plaza_id', plazaId),
+        adminSupabase.from('activadores').select('usuario_id', { count: 'exact', head: true }).eq('plaza_id', plazaId),
+        adminSupabase.from('activaciones').select('id', { count: 'exact', head: true }).eq('plaza_id_registro', plazaId),
+        adminSupabase.from('activaciones').select('id', { count: 'exact', head: true }).eq('plaza_base_id_registro', plazaId),
+        adminSupabase.from('activaciones').select('id', { count: 'exact', head: true }).eq('plaza_efectiva_id_registro', plazaId),
+        adminSupabase.from('activador_plaza_temporal').select('id', { count: 'exact', head: true }).eq('plaza_temporal_id', plazaId),
       ])
 
-      if (equiposErr || activadoresErr || activacionesErr || temporalesErr) {
-        const err = equiposErr || activadoresErr || activacionesErr || temporalesErr
+      const failedCheck = relationChecks.find(({ error }) => error)
+      if (failedCheck) {
+        const err = failedCheck.error
         jsonError(res, 500, 'No se pudo verificar relaciones de la plaza.', err?.message)
         return
       }
 
-      const hasRelations = (equipos ?? []).length > 0 || (activadoresRows ?? []).length > 0 || (activacionesRows ?? []).length > 0 || (temporales ?? []).length > 0
+      const hasRelations = relationChecks.some(({ count }) => (count ?? 0) > 0)
 
       if (hasRelations) {
         res.status(409).json({ ok: false, deleted: false, message: 'No se puede eliminar la plaza porque tiene información relacionada. Puedes desactivarla.' })
@@ -1360,6 +1432,8 @@ export function createAdminApiApp({ env = process.env } = {}) {
     if (updates.nombre) updates.nombre_normalizado = normalizeOrganizationName(updates.nombre)
     const { error } = await adminSupabase.from('plazas').update(updates).eq('id', plazaId)
     if (error) { jsonError(res, 500, 'No se pudo actualizar la plaza.', error.message); return }
+    res.json({ ok: true })
+    return
 
     // Verificar relaciones reales antes de eliminar físicamente
     try {
