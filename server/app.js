@@ -1328,6 +1328,24 @@ export function createAdminApiApp({ env = process.env } = {}) {
     res.json({ ok: true })
   }))
 
+  app.delete('/admin/plazas/:plazaId', asyncRoute(async (req, res) => {
+    const plazaId = normalizeText(req.params.plazaId)
+    if (!plazaId) { jsonError(res, 400, 'Parametro plazaId requerido.'); return }
+
+    const { data: plaza, error: plazaErr } = await adminSupabase.from('plazas').select('*').eq('id', plazaId).maybeSingle()
+    if (plazaErr) { jsonError(res, 500, 'No se pudo leer la plaza.', plazaErr.message); return }
+    if (!plaza) { jsonError(res, 404, 'Plaza no encontrada.'); return }
+    if (plaza.activa === false) {
+      res.json({ ok: true, deleted: false, message: 'La plaza ya se encontraba inactiva.' })
+      return
+    }
+
+    // Siempre realizar baja lógica: inactivar la plaza para preservar historial y relaciones
+    const { error: updateErr } = await adminSupabase.from('plazas').update({ activa: false }).eq('id', plazaId)
+    if (updateErr) { jsonError(res, 500, 'No se pudo inactivar la plaza.', updateErr.message); return }
+    res.json({ ok: true, deleted: false, message: 'Plaza inactivada correctamente.' })
+  }))
+
   app.post(
     '/admin/users/:userId/temporary-plaza',
     asyncRoute(async (req, res) => {

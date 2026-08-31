@@ -419,7 +419,7 @@ async function requestAdmin(path, options = {}) {
 }
 
 async function eliminarActivacion(activacion) {
-  if (!hasCredentials.value) {
+  if (!hasCredentials.value && !canEditActivaciones.value) {
     notifyWarning(
       'Conecta la API admin desde Usuarios, Notificaciones o Capacidad para eliminar activaciones.'
     )
@@ -799,7 +799,7 @@ async function descargarExcelPersonalizado() {
             <td>
               <div class="acciones">
                 <button class="boton boton-editar" @click.stop="abrirDetalle(activacion)">Ver detalle</button>
-                <button v-if="canAdminister" class="boton boton-eliminar" :disabled="!hasCredentials || deletingActivationId === activacion.id || !activacion.id" @click.stop="eliminarActivacion(activacion)">{{ deletingActivationId === activacion.id ? 'Eliminando...' : !activacion.id ? 'Sin ID' : 'Eliminar' }}</button>
+                <button v-if="canAdminister" class="boton boton-eliminar" :disabled="(!hasCredentials && !canEditActivaciones) || deletingActivationId === activacion.id || !activacion.id" @click.stop="eliminarActivacion(activacion)">{{ deletingActivationId === activacion.id ? 'Eliminando...' : !activacion.id ? 'Sin ID' : 'Eliminar' }}</button>
               </div>
             </td>
           </tr>

@@ -12,6 +12,7 @@ const procesando = ref(false)
 const nuevo = ref({ nombre: '' })
 const editandoId = ref(null)
 const edicion = ref({})
+const eliminandoId = ref(null)
 
 function request(path, options = {}) {
   return adminApiRequest({ baseUrl: apiBaseUrl, path, token: session.value?.access_token, ...options })
@@ -63,6 +64,19 @@ async function cambiarEstado(plaza) {
   finally { procesando.value = false }
 }
 
+async function eliminarPlaza(plaza) {
+  const confirm = window.confirm(`Eliminar plaza "${plaza.nombre}"? Si tiene datos relacionados se inactivará.`)
+  if (!confirm) return
+  eliminandoId.value = plaza.id
+  procesando.value = true
+  try {
+    const result = await request(`/admin/plazas/${plaza.id}`, { method: 'DELETE' })
+    await cargar();
+    notifySuccess(result.message ?? 'Operación realizada.')
+  } catch (error) { notifyError(errorMessage(error)) }
+  finally { procesando.value = false; eliminandoId.value = null }
+}
+
 onMounted(cargar)
 </script>
 
@@ -89,7 +103,11 @@ onMounted(cargar)
           <template v-else>
             <td>{{ plaza.nombre }}</td>
             <td><span class="scope-pill" :class="plaza.activa ? 'scope-pill-all' : 'scope-pill-user'">{{ plaza.activa ? 'Activa' : 'Inactiva' }}</span></td>
-            <td><button class="boton boton-editar" @click="editar(plaza)">Editar</button><button class="boton" :disabled="procesando" @click="cambiarEstado(plaza)">{{ plaza.activa ? 'Desactivar' : 'Activar' }}</button></td>
+            <td>
+              <button class="boton boton-editar" @click="editar(plaza)">Editar</button>
+              <button class="boton" :disabled="procesando" @click="cambiarEstado(plaza)">{{ plaza.activa ? 'Desactivar' : 'Activar' }}</button>
+              <button class="boton boton-eliminar" :disabled="procesando || eliminandoId===plaza.id" @click="eliminarPlaza(plaza)">{{ eliminandoId===plaza.id ? 'Procesando...' : 'Eliminar' }}</button>
+            </td>
           </template>
         </tr>
       </tbody></table></div>
