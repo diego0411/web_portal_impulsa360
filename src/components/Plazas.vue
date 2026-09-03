@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { adminApiRequest } from '../lib/adminApiClient'
 import { useAuth } from '../lib/authStore'
-import { notifyError, notifySuccess, notifyWarning } from '../lib/feedback'
+import { notifyError, notifySuccess, notifyWarning, requestConfirmation } from '../lib/feedback'
 
 const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(/\/$/, '')
 const { session } = useAuth()
@@ -65,7 +65,7 @@ async function cambiarEstado(plaza) {
 }
 
 async function eliminarPlaza(plaza) {
-  const confirm = window.confirm(`Eliminar plaza "${plaza.nombre}"? Esta acción intentará eliminarla físicamente y fallará si tiene datos relacionados.`)
+  const confirm = await requestConfirmation({ title: 'Eliminar plaza', message: '¿Está seguro de que desea eliminar definitivamente este registro? Esta acción no se puede deshacer.', confirmLabel: 'Eliminar definitivamente', cancelLabel: 'Cancelar', tone: 'danger' })
   if (!confirm) return
   eliminandoId.value = plaza.id
   procesando.value = true

@@ -84,7 +84,7 @@ async function verDetalle(team) {
 }
 
 async function eliminarEquipo(team) {
-  const ok = await requestConfirmation({ title: `Eliminar equipo #${team.numero}`, message: '¿Deseas eliminar este equipo? Si tiene historial se inactivará en lugar de eliminar.' })
+  const ok = await requestConfirmation({ title: `Eliminar equipo #${team.numero}`, message: '¿Está seguro de que desea eliminar definitivamente este registro? Esta acción no se puede deshacer.', confirmLabel: 'Eliminar definitivamente', cancelLabel: 'Cancelar', tone: 'danger' })
   if (!ok) return
   procesando.value = true
   try {

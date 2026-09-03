@@ -1382,15 +1382,18 @@ export function createAdminApiApp({ env = process.env } = {}) {
     if (teamError) { jsonError(res, 500, 'No se pudo leer el equipo.', teamError.message); return }
     if (!team) { jsonError(res, 404, 'Equipo no encontrado.'); return }
 
-    if (team.activo === false) {
-      res.json({ ok: true, deleted: false, message: 'El equipo ya se encontraba inactivo.' })
-      return
-    }
+    const checks = await Promise.all([
+      adminSupabase.from('activadores').select('usuario_id', { count: 'exact', head: true }).eq('equipo_id', teamId),
+      adminSupabase.from('equipo_lider_historial').select('id', { count: 'exact', head: true }).eq('equipo_id', teamId),
+    ])
+    const failed = checks.find((item) => item.error)
+    if (failed) { jsonError(res, 500, 'No se pudo verificar relaciones del equipo.', failed.error.message); return }
+    if (checks.some((item) => (item.count ?? 0) > 0)) { res.status(409).json({ ok: false, deleted: false, message: 'No se puede eliminar el equipo porque tiene integrantes o historial relacionado. Debe deshabilitarse.' }); return }
 
     // Siempre realizar baja lógica: inactivar el equipo para preservar historial y relaciones
-    const { error: updateErr } = await adminSupabase.from('equipos').update({ activo: false }).eq('id', teamId)
-    if (updateErr) { jsonError(res, 500, 'No se pudo inactivar el equipo.', updateErr.message); return }
-    res.json({ ok: true, deleted: false, message: 'Equipo inactivado.' })
+    const { error: deleteErr } = await adminSupabase.from('equipos').delete().eq('id', teamId)
+    if (deleteErr) { jsonError(res, deleteErr.code === '23503' ? 409 : 500, deleteErr.code === '23503' ? 'No se puede eliminar el equipo porque tiene información relacionada. Debe deshabilitarse.' : 'No se pudo eliminar el equipo.', deleteErr.message); return }
+    res.json({ ok: true, deleted: true, message: 'Equipo eliminado correctamente.' })
   }))
 
   // Plazas: listar, crear, editar (activar/desactivar)
@@ -2008,6 +2011,16 @@ export function createAdminApiApp({ env = process.env } = {}) {
         jsonError(res, 500, existingErr.message)
         return
       }
+      if (!existingRow) { jsonError(res, 404, 'No se encontro el usuario en activadores.'); return }
+      const checks = await Promise.all([
+        adminSupabase.from('activaciones').select('id', { count: 'exact', head: true }).eq('usuario_id', userId),
+        adminSupabase.from('activadores').select('usuario_id', { count: 'exact', head: true }).eq('lider_id', userId),
+        adminSupabase.from('activador_plaza_temporal').select('id', { count: 'exact', head: true }).eq('activador_id', userId),
+        adminSupabase.from('equipos').select('id', { count: 'exact', head: true }).eq('lider_actual_id', userId),
+      ])
+      const failedCheck = checks.find((item) => item.error)
+      if (failedCheck) { jsonError(res, 500, 'No se pudo verificar relaciones del usuario.', failedCheck.error.message); return }
+      if (checks.some((item) => (item.count ?? 0) > 0)) { res.status(409).json({ ok: false, deleted: false, message: 'No se puede eliminar el usuario porque tiene información relacionada. Debe deshabilitarse.' }); return }
 
       const { data: deletedRows, error: deleteTableErr } = await adminSupabase
         .from('activadores')
@@ -2016,28 +2029,12 @@ export function createAdminApiApp({ env = process.env } = {}) {
         .select('usuario_id')
 
       if (deleteTableErr) {
-        jsonError(res, 500, deleteTableErr.message)
+        jsonError(res, deleteTableErr.code === '23503' ? 409 : 500, deleteTableErr.code === '23503' ? 'No se puede eliminar el usuario porque tiene información relacionada. Debe deshabilitarse.' : deleteTableErr.message)
         return
       }
 
       const tableRecordDeleted = Array.isArray(deletedRows) && deletedRows.length > 0
-      const { error: deleteAuthErr } = await adminSupabase.auth.admin.deleteUser(userId)
-
-      if (deleteAuthErr) {
-        if (existingRow && tableRecordDeleted) {
-          await adminSupabase.from('activadores').upsert(existingRow)
-        }
-
-        jsonError(
-          res,
-          500,
-          'No se pudo borrar en Auth. Se intento restaurar el registro de tabla para evitar inconsistencia.',
-          deleteAuthErr.message
-        )
-        return
-      }
-
-      res.json({ ok: true, tableRecordDeleted })
+      res.json({ ok: true, deleted: tableRecordDeleted, tableRecordDeleted, message: 'Usuario eliminado del portal. La cuenta de Supabase Auth se conserva.' })
     })
   )
 

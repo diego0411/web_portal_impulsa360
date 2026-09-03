@@ -190,6 +190,14 @@ async function activarUsuario(usuario) {
   } catch (error) { notifyError(getErrorMessage(error)) }
   finally { procesando.value = false }
 }
+async function eliminarUsuario(usuario) {
+  const ok = await requestConfirmation({ title: 'Eliminar usuario', message: '¿Está seguro de que desea eliminar definitivamente este registro? Esta acción no se puede deshacer.', confirmLabel: 'Eliminar definitivamente', cancelLabel: 'Cancelar', tone: 'danger' })
+  if (!ok) return
+  procesando.value = true
+  try { const result = await requestAdmin(`/admin/users/${usuario.usuario_id}`, { method: 'DELETE' }); await cargarUsuarios(); notifySuccess(result.message ?? 'Usuario eliminado correctamente.') }
+  catch (error) { notifyError(getErrorMessage(error)) }
+  finally { procesando.value = false }
+}
 function abrirPlazaTemporal(usuario) {
   usuarioPlazaTemporal.value = usuario
   plazaTemporalForm.value = { plaza_temporal: '', tipo_zona: 'punto_temporal', ciudad_plaza: usuario.plaza_nombre || usuario.plaza_base || usuario.plaza || '', inicio: '', fin: '', motivo: '', activo: true }
@@ -324,7 +332,7 @@ onMounted(cargarUsuarios)
             <td>{{ equiposDelUsuario(usuario) }}</td><td>{{ nombreLider(usuario) }}</td><td>{{ usuario.facturador_nombre || '-' }}</td><td>{{ etiqueta(usuario.rol ?? 'activador') }}</td>
             <td>{{ esRol(usuario, 'lider') ? (usuario.puede_activar === true ? 'Sí' : 'No') : '-' }}</td>
             <td><span class="estado-etiqueta" :class="`estado-${usuario.estado ?? 'activo'}`">{{ etiqueta(usuario.estado ?? 'activo') }}</span></td><td>-</td>
-            <td><div class="acciones"><label v-if="esRol(usuario, 'activador')" class="scope-pill"><input type="checkbox" :checked="usuario.plaza_temporal_activa" :disabled="procesando" @change="cambiarPlazaTemporal(usuario, $event.target.checked)"> Plaza temporal</label><button class="boton boton-editar" :disabled="procesando" @click="editarUsuario(usuario)">Editar</button><button v-if="(usuario.estado ?? 'activo') === 'activo'" class="boton boton-eliminar" :disabled="procesando" @click="abrirInhabilitacion(usuario)">Inhabilitar</button><button v-else class="boton boton-guardar" :disabled="procesando" @click="activarUsuario(usuario)">Activar</button></div></td>
+            <td><div class="acciones"><label v-if="esRol(usuario, 'activador')" class="scope-pill"><input type="checkbox" :checked="usuario.plaza_temporal_activa" :disabled="procesando" @change="cambiarPlazaTemporal(usuario, $event.target.checked)"> Plaza temporal</label><button class="boton boton-editar" :disabled="procesando" @click="editarUsuario(usuario)">Editar</button><button v-if="(usuario.estado ?? 'activo') === 'activo'" class="boton boton-eliminar" :disabled="procesando" @click="abrirInhabilitacion(usuario)">Inhabilitar</button><button v-else class="boton boton-guardar" :disabled="procesando" @click="activarUsuario(usuario)">Activar</button><button class="boton boton-eliminar" :disabled="procesando" @click="eliminarUsuario(usuario)">Eliminar definitivamente</button></div></td>
           </template>
         </tr>
       </tbody></table></div>
