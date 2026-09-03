@@ -13,6 +13,9 @@ const nuevo = ref({ nombre: '' })
 const editandoId = ref(null)
 const edicion = ref({})
 const eliminandoId = ref(null)
+const modalReasignar = ref(false)
+const plazaPendiente = ref(null)
+const plazaDestino = ref('')
 
 function request(path, options = {}) {
   return adminApiRequest({ baseUrl: apiBaseUrl, path, token: session.value?.access_token, ...options })
@@ -73,8 +76,20 @@ async function eliminarPlaza(plaza) {
     const result = await request(`/admin/plazas/${plaza.id}`, { method: 'DELETE' })
     await cargar();
     notifySuccess(result.message ?? 'Operación realizada.')
-  } catch (error) { notifyError(error?.status === 409 ? (error.message && !error.message.startsWith('Error HTTP') ? error.message : 'No se puede eliminar este registro porque tiene información relacionada. Puede deshabilitarlo para conservar el historial.') : errorMessage(error)) }
+  } catch (error) {
+    if (error?.status === 409) { plazaPendiente.value = plaza; plazaDestino.value = ''; modalReasignar.value = true }
+    else notifyError(errorMessage(error))
+  }
   finally { procesando.value = false; eliminandoId.value = null }
+}
+async function reasignarYEliminar() {
+  if (!plazaDestino.value) { notifyWarning('Selecciona una plaza activa de destino.'); return }
+  const ok = await requestConfirmation({ title: 'Reasignar y eliminar', message: 'Se reasignarán las relaciones operativas compatibles y se eliminará la plaza original. ¿Deseas continuar?', confirmLabel: 'Reasignar y eliminar', cancelLabel: 'Cancelar', tone: 'danger' })
+  if (!ok) return
+  procesando.value = true
+  try { const result = await request(`/admin/plazas/${plazaPendiente.value.id}/reassign-delete`, { method: 'POST', body: { destino_id: plazaDestino.value } }); modalReasignar.value = false; plazaPendiente.value = null; await cargar(); notifySuccess(result.message ?? 'Plaza reasignada y eliminada.') }
+  catch (error) { notifyError(error?.status === 409 ? error.message : errorMessage(error)) }
+  finally { procesando.value = false }
 }
 
 onMounted(cargar)
@@ -112,5 +127,6 @@ onMounted(cargar)
         </tr>
       </tbody></table></div>
     </div>
+    <teleport to="body"><div v-if="modalReasignar" class="confirm-overlay" @click.self="modalReasignar = false"><section class="confirm-modal" role="dialog" aria-modal="true"><h3 class="confirm-title">Eliminar plaza</h3><p class="confirm-message">La plaza tiene relaciones. Elige una acción.</p><div class="confirm-actions"><button class="boton boton-cancelar" @click="modalReasignar = false">Cancelar</button><button class="boton" @click="modalReasignar = false; cambiarEstado(plazaPendiente)">Deshabilitar plaza</button></div><select v-model="plazaDestino" class="input-texto"><option value="">Plaza activa de destino</option><option v-for="item in plazas.filter((p) => p.activa && p.id !== plazaPendiente?.id)" :key="item.id" :value="item.id">{{ item.nombre }}</option></select><button class="boton boton-eliminar" :disabled="procesando || !plazaDestino" @click="reasignarYEliminar">Reasignar y eliminar</button></section></div></teleport>
   </section>
 </template>

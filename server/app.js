@@ -1374,6 +1374,15 @@ export function createAdminApiApp({ env = process.env } = {}) {
     }
   }))
 
+  app.post('/admin/plazas/:plazaId/reassign-delete', asyncRoute(async (req, res) => {
+    const plazaId = normalizeText(req.params.plazaId)
+    const destinoId = normalizeText(req.body?.destino_id)
+    if (!plazaId || !destinoId || plazaId === destinoId) { jsonError(res, 400, 'Plaza de destino invalida.'); return }
+    const { data, error } = await adminSupabase.rpc('reasignar_y_eliminar_plaza', { p_plaza_origen: plazaId, p_plaza_destino: destinoId })
+    if (error) { jsonError(res, error.code === 'P0001' || error.code === '23503' ? 409 : 500, error.code === 'P0001' || error.code === '23503' ? error.message : 'No se pudo reasignar y eliminar la plaza.', error.message); return }
+    res.json({ ok: true, deleted: true, reassigned: data, message: 'Relaciones operativas reasignadas y plaza eliminada.' })
+  }))
+
   app.delete('/admin/teams/:teamId', asyncRoute(async (req, res) => {
     const teamId = normalizeText(req.params.teamId)
     if (!teamId) { jsonError(res, 400, 'Parametro teamId requerido.'); return }
