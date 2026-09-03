@@ -195,7 +195,7 @@ async function eliminarUsuario(usuario) {
   if (!ok) return
   procesando.value = true
   try { const result = await requestAdmin(`/admin/users/${usuario.usuario_id}`, { method: 'DELETE' }); await cargarUsuarios(); notifySuccess(result.message ?? 'Usuario eliminado correctamente.') }
-  catch (error) { notifyError(getErrorMessage(error)) }
+  catch (error) { notifyError(error?.status === 409 ? (error.message && !error.message.startsWith('Error HTTP') ? error.message : 'No se puede eliminar este registro porque tiene información relacionada. Puede deshabilitarlo para conservar el historial.') : getErrorMessage(error)) }
   finally { procesando.value = false }
 }
 function abrirPlazaTemporal(usuario) {

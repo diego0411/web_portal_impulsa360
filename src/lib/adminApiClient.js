@@ -84,7 +84,9 @@ export async function adminApiRequest({
   const payload = await parseResponsePayload(response)
 
   if (!response.ok) {
-    throw new Error(parseErrorMessage(payload, response.status))
+    const error = new Error(parseErrorMessage(payload, response.status))
+    error.status = response.status
+    throw error
   }
 
   return payload

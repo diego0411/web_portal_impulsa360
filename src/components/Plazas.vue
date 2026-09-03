@@ -73,7 +73,7 @@ async function eliminarPlaza(plaza) {
     const result = await request(`/admin/plazas/${plaza.id}`, { method: 'DELETE' })
     await cargar();
     notifySuccess(result.message ?? 'Operación realizada.')
-  } catch (error) { notifyError(errorMessage(error)) }
+  } catch (error) { notifyError(error?.status === 409 ? (error.message && !error.message.startsWith('Error HTTP') ? error.message : 'No se puede eliminar este registro porque tiene información relacionada. Puede deshabilitarlo para conservar el historial.') : errorMessage(error)) }
   finally { procesando.value = false; eliminandoId.value = null }
 }
 
