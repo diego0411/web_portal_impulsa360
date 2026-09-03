@@ -20,6 +20,11 @@ const plazaDestino = ref('')
 function request(path, options = {}) {
   return adminApiRequest({ baseUrl: apiBaseUrl, path, token: session.value?.access_token, ...options })
 }
+function requestWithTimeout(path, options = {}, timeoutMs = 15000) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  return request(path, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer))
+}
 
 function errorMessage(error) { return error instanceof Error ? error.message : 'Error inesperado.' }
 
@@ -83,12 +88,14 @@ async function eliminarPlaza(plaza) {
   finally { procesando.value = false; eliminandoId.value = null }
 }
 async function reasignarYEliminar() {
-  if (!plazaDestino.value) { notifyWarning('Selecciona una plaza activa de destino.'); return }
+  const destino = plazas.value.find((item) => item.id === plazaDestino.value && item.activa && item.id !== plazaPendiente.value?.id)
+  if (!destino) { notifyWarning('Selecciona una plaza activa de destino.'); return }
+  modalReasignar.value = false
   const ok = await requestConfirmation({ title: 'Reasignar y eliminar', message: 'Se reasignarán las relaciones operativas compatibles y se eliminará la plaza original. ¿Deseas continuar?', confirmLabel: 'Reasignar y eliminar', cancelLabel: 'Cancelar', tone: 'danger' })
-  if (!ok) return
+  if (!ok) { modalReasignar.value = true; return }
   procesando.value = true
-  try { const result = await request(`/admin/plazas/${plazaPendiente.value.id}/reassign-delete`, { method: 'POST', body: { destino_id: plazaDestino.value } }); modalReasignar.value = false; plazaPendiente.value = null; await cargar(); notifySuccess(result.message ?? 'Plaza reasignada y eliminada.') }
-  catch (error) { notifyError(error?.status === 409 ? error.message : errorMessage(error)) }
+  try { const result = await requestWithTimeout(`/admin/plazas/${plazaPendiente.value.id}/reassign-delete`, { method: 'POST', body: { destino_id: destino.id } }); plazaPendiente.value = null; await cargar(); notifySuccess(result.message ?? 'Plaza reasignada y eliminada.') }
+  catch (error) { notifyError(error?.name === 'AbortError' ? 'La operación tardó demasiado. Inténtalo nuevamente.' : (error?.status === 409 ? error.message : errorMessage(error))) }
   finally { procesando.value = false }
 }
 

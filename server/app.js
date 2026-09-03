@@ -27,7 +27,7 @@ const ACTIVATION_EDITABLE_FIELDS = new Set([
   'plaza_temporal',
 ])
 const ALLOWED_STORE_SIZES = new Set(['Pequeña', 'Mediana', 'Grande'])
-const ALLOWED_USER_ROLES = new Set(['activador', 'lider', 'facturador', 'administrador'])
+const ALLOWED_USER_ROLES = new Set(['activador', 'lider', 'facturador', 'administrador', 'banco'])
 const ALLOWED_USER_STATES = new Set(['activo', 'inhabilitado'])
 const ALLOWED_TEMPORARY_ZONE_TYPES = new Set(['universidad', 'feria', 'evento', 'campana', 'punto_temporal'])
 const REQUIRED_ENV = [
@@ -902,7 +902,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
     const { data: authData, error: authError } = await adminSupabase.auth.getUser(authorization.slice(7))
     if (authError || !authData.user) return null
     const { data: profile } = await adminSupabase.from('activadores').select('usuario_id,nombre,email,rol,estado,lider_id,puede_activar').eq('usuario_id', authData.user.id).maybeSingle()
-    if (!profile || profile.estado !== 'activo' || !['administrador', 'lider'].includes(profile.rol)) return null
+    if (!profile || profile.estado !== 'activo' || !['administrador', 'lider', 'banco'].includes(profile.rol)) return null
     return profile
   }
 
@@ -918,6 +918,11 @@ export function createAdminApiApp({ env = process.env } = {}) {
     if (!parsed) {
       const profile = await resolvePortalUser(req)
       if (profile?.rol === 'administrador') { req.portalUser = profile; next(); return }
+      if (profile?.rol === 'banco') {
+        if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) { req.portalUser = profile; next(); return }
+        jsonError(res, 403, 'El rol banco solo tiene permisos de lectura.')
+        return
+      }
       if (typeof req.headers.authorization === 'string' && req.headers.authorization.startsWith('Bearer ')) {
         jsonError(res, 403, 'Se requiere un administrador activo.')
         return
@@ -948,6 +953,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
   app.get('/portal/users', asyncRoute(async (req, res) => {
     let query = adminSupabase.from('activadores').select('*').order('nombre')
     if (req.portalUser.rol === 'lider') query = query.eq('lider_id', req.portalUser.usuario_id)
+    if (req.portalUser.rol === 'banco') query = query.eq('rol', 'activador')
     const { data, error } = await query
     if (error) { jsonError(res, 500, 'No se pudo obtener usuarios.', error.message); return }
     const users = data ?? []

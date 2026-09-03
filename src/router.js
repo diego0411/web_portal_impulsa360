@@ -51,5 +51,6 @@ router.beforeEach(async (to) => {
   if (to.meta.public) return profile.value ? '/activaciones' : true
   if (!session.value || !profile.value) return { path: '/login', query: { redirect: to.fullPath } }
   if (profile.value.rol === 'lider' && ['/usuarios', '/equipos', '/notificaciones', '/capacidad', '/plazas'].includes(to.path)) return '/activaciones'
+  if (profile.value.rol === 'banco' && ['/usuarios', '/equipos', '/notificaciones', '/capacidad', '/plazas'].includes(to.path)) return '/activaciones'
   return true
 })

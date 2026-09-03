@@ -7,7 +7,7 @@ import { containsNormalized, isValidEmail, normalizeEmail } from '../lib/textUti
 import { deduplicarPlazas, deduplicarPlazasCatalogo, mismaPlaza } from '../lib/plazas'
 
 const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(/\/$/, '')
-const roles = ['activador', 'lider', 'facturador', 'administrador']
+const roles = ['activador', 'lider', 'facturador', 'administrador', 'banco']
 const estados = ['activo', 'inhabilitado']
 const tiposZonaTemporal = [
   { value: 'universidad', label: 'Universidad' },
