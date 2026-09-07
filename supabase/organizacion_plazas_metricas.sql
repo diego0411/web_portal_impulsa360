@@ -592,10 +592,12 @@ revoke all on function public.asignar_lider_equipo(uuid,uuid,timestamptz,text) f
 revoke all on function public.asignar_activador_equipo(uuid,uuid,timestamptz,text) from public, anon, authenticated;
 revoke all on function public.asignar_equipos_lider(uuid,uuid[],timestamptz,text) from public, anon, authenticated;
 revoke all on function public.actualizar_equipo_organizacion(uuid,text,uuid,uuid,boolean,timestamptz,text) from public, anon, authenticated;
+revoke all on function public.reasignar_y_eliminar_plaza(uuid,uuid) from public, anon, authenticated;
 grant execute on function public.asignar_lider_equipo(uuid,uuid,timestamptz,text) to service_role;
 grant execute on function public.asignar_activador_equipo(uuid,uuid,timestamptz,text) to service_role;
 grant execute on function public.asignar_equipos_lider(uuid,uuid[],timestamptz,text) to service_role;
 grant execute on function public.actualizar_equipo_organizacion(uuid,text,uuid,uuid,boolean,timestamptz,text) to service_role;
+grant execute on function public.reasignar_y_eliminar_plaza(uuid,uuid) to service_role;
 revoke all on function public.plaza_efectiva_activador(uuid,timestamptz) from public, anon;
 grant execute on function public.plaza_efectiva_activador(uuid,timestamptz) to authenticated, service_role;
 

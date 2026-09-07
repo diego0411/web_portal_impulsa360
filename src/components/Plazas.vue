@@ -72,6 +72,23 @@ async function cambiarEstado(plaza) {
   finally { procesando.value = false }
 }
 
+async function deshabilitarPlaza(plaza) {
+  if (!plaza) return
+  if (plaza.activa === false) {
+    modalReasignar.value = false
+    plazaPendiente.value = null
+    return
+  }
+  procesando.value = true
+  try {
+    await request(`/admin/plazas/${plaza.id}`, { method: 'PATCH', body: { activa: false } })
+    modalReasignar.value = false
+    plazaPendiente.value = null
+    await cargar(); notifySuccess('Plaza desactivada.')
+  } catch (error) { notifyError(errorMessage(error)) }
+  finally { procesando.value = false }
+}
+
 async function eliminarPlaza(plaza) {
   const confirm = await requestConfirmation({ title: 'Eliminar plaza', message: '¿Está seguro de que desea eliminar definitivamente este registro? Esta acción no se puede deshacer.', confirmLabel: 'Eliminar definitivamente', cancelLabel: 'Cancelar', tone: 'danger' })
   if (!confirm) return
@@ -134,6 +151,6 @@ onMounted(cargar)
         </tr>
       </tbody></table></div>
     </div>
-    <teleport to="body"><div v-if="modalReasignar" class="confirm-overlay" @click.self="modalReasignar = false"><section class="confirm-modal" role="dialog" aria-modal="true"><h3 class="confirm-title">Eliminar plaza</h3><p class="confirm-message">La plaza tiene relaciones. Elige una acción.</p><div class="confirm-actions"><button class="boton boton-cancelar" @click="modalReasignar = false">Cancelar</button><button class="boton" @click="modalReasignar = false; cambiarEstado(plazaPendiente)">Deshabilitar plaza</button></div><select v-model="plazaDestino" class="input-texto"><option value="">Plaza activa de destino</option><option v-for="item in plazas.filter((p) => p.activa && p.id !== plazaPendiente?.id)" :key="item.id" :value="item.id">{{ item.nombre }}</option></select><button class="boton boton-eliminar" :disabled="procesando || !plazaDestino" @click="reasignarYEliminar">Reasignar y eliminar</button></section></div></teleport>
+    <teleport to="body"><div v-if="modalReasignar" class="confirm-overlay" @click.self="modalReasignar = false"><section class="confirm-modal" role="dialog" aria-modal="true"><h3 class="confirm-title">Eliminar plaza</h3><p class="confirm-message">La plaza tiene relaciones. Elige una acción.</p><div class="confirm-actions"><button class="boton boton-cancelar" @click="modalReasignar = false">Cancelar</button><button class="boton" :disabled="procesando" @click="deshabilitarPlaza(plazaPendiente)">Deshabilitar plaza</button></div><select v-model="plazaDestino" class="input-texto"><option value="">Plaza activa de destino</option><option v-for="item in plazas.filter((p) => p.activa && p.id !== plazaPendiente?.id)" :key="item.id" :value="item.id">{{ item.nombre }}</option></select><button class="boton boton-eliminar" :disabled="procesando || !plazaDestino" @click="reasignarYEliminar">Reasignar y eliminar</button></section></div></teleport>
   </section>
 </template>

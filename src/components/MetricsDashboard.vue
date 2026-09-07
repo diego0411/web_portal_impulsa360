@@ -80,7 +80,7 @@ const opciones = computed(() => {
 
 const dashboard = computed(() => {
   const rows = [], points = []
-  const maps = { dia: new Map(), semana: new Map(), mes: new Map(), plaza: new Map(), activador: new Map(), tipo: new Map(), lider: new Map(), clasificacion: new Map() }
+  const maps = { dia: new Map(), semana: new Map(), mes: new Map(), plaza: new Map(), activador: new Map(), tipo: new Map(), lider: new Map(), clasificacion: new Map(), errores: new Map() }
   const kpis = { total: 0, hoy: 0, semana: 0, mes: 0, cashIn: 0, errores: 0, tiendas: 0, comercios: 0 }
   const activadorQuery = normalizado(filtroActivador.value)
   const teamStats = new Map()
@@ -115,6 +115,7 @@ const dashboard = computed(() => {
     if (clasificacion === 'Barrio') kpis.tiendas += 1
     sumar(maps.dia, fecha || 'Sin fecha'); sumar(maps.semana, weekRegistro(fecha)); sumar(maps.mes, monthRegistro(fecha)); sumar(maps.plaza, plaza); sumar(maps.activador, activador); sumar(maps.tipo, tipo)
     sumar(maps.clasificacion, clasificacion)
+    sumar(maps.errores, item.hubo_error === true ? 'Con error' : 'Sin error')
     if (lider) sumar(maps.lider, lider)
     const team = teamStats.get(equipo) ?? { nombre: equipo, total: 0, errores: 0, integrantes: new Set() }
     team.total += 1; if (item.hubo_error === true) team.errores += 1; team.integrantes.add(activador); teamStats.set(equipo, team)
@@ -144,7 +145,7 @@ const dashboard = computed(() => {
     semanal: maps.semana.size ? kpis.total / maps.semana.size : 0,
     mensual: maps.mes.size ? kpis.total / maps.mes.size : 0,
   }
-  return { rows, points, kpis: { ...kpis, comercios: comerciosUnicos.size }, promedios, activadoresUnicos: activadoresUnicos.size, porEquipo, resumenEquipoMes, porDia: ranking(maps.dia).sort((a, b) => a.label.localeCompare(b.label)), porPlaza: ranking(maps.plaza), topActivadores: ranking(maps.activador), porTipo: ranking(maps.tipo), porClasificacion: ranking(maps.clasificacion), topLideres: ranking(maps.lider, 10) }
+  return { rows, points, kpis: { ...kpis, comercios: comerciosUnicos.size }, promedios, activadoresUnicos: activadoresUnicos.size, porEquipo, resumenEquipoMes, porDia: ranking(maps.dia).sort((a, b) => a.label.localeCompare(b.label)), porPlaza: ranking(maps.plaza), topActivadores: ranking(maps.activador), porTipo: ranking(maps.tipo), porClasificacion: ranking(maps.clasificacion), porErrores: ranking(maps.errores), topLideres: ranking(maps.lider, 10) }
 })
 
 const equipoMesHeatmap = computed(() => {
@@ -191,10 +192,12 @@ const lineChart = computed(() => {
 
 const tarjetas = computed(() => [
   { key: 'total', icon: '◎', label: 'Activaciones totales', value: formatNumber(dashboard.value.kpis.total), note: 'Registros filtrados' },
-  { key: 'promedio-dia', icon: '◷', label: 'Promedio diario', value: formatDecimal(dashboard.value.promedios.diario), note: 'Sobre días con actividad' },
-  { key: 'promedio-semana', icon: '▦', label: 'Promedio semanal', value: formatDecimal(dashboard.value.promedios.semanal), note: 'Sobre semanas con actividad' },
-  { key: 'promedio-mes', icon: '□', label: 'Promedio mensual', value: formatDecimal(dashboard.value.promedios.mensual), note: 'Sobre meses con actividad' },
-  { key: 'activadores', icon: '◇', label: 'Activadores únicos', value: formatNumber(dashboard.value.activadoresUnicos), note: 'Nombres únicos en el corte' },
+  { key: 'hoy', icon: '◷', label: 'Hoy', value: formatNumber(dashboard.value.kpis.hoy), note: todayKey },
+  { key: 'semana', icon: '▦', label: 'Semana', value: formatNumber(dashboard.value.kpis.semana), note: `Desde ${formatDate(weekStartKey)}` },
+  { key: 'mes', icon: '□', label: 'Mes', value: formatNumber(dashboard.value.kpis.mes), note: formatMonth(monthKey) },
+  { key: 'cash-in', icon: '◇', label: 'Cash-In', value: formatNumber(dashboard.value.kpis.cashIn), note: 'Registros marcados' },
+  { key: 'errores', icon: '!', label: 'Errores', value: formatNumber(dashboard.value.kpis.errores), note: 'Registros con error' },
+  { key: 'tiendas', icon: '⌂', label: 'Tiendas', value: formatNumber(dashboard.value.kpis.tiendas), note: 'Clasificación barrio' },
   { key: 'comercios', icon: '⌂', label: 'Comercios', value: formatNumber(dashboard.value.kpis.comercios), note: 'Comercios únicos con nombre' },
 ])
 const hayFiltros = computed(() => Boolean(filtroDesde.value || filtroHasta.value || filtroPlaza.value || filtroActivador.value || filtroTipo.value || filtroLider.value || filtroEquipo.value))
@@ -241,6 +244,7 @@ function exportarDashboard() {
         <article class="metrics-chart-card metrics-small-chart"><h3>Ciudades</h3><p>Distribución por plaza o ciudad.</p><div class="chart-legend"><span class="legend-dot"></span><span>Top 10</span></div><div class="vertical-bars city-bars"><div v-for="item in dashboard.porPlaza.slice(0, 10)" :key="item.label" class="vertical-bar" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><strong>{{ formatNumber(item.value) }}</strong><span :style="{ height: barHeight(item.value, dashboard.porPlaza) }"></span><small>{{ item.label }}</small></div></div></article>
         <article class="metrics-chart-card metrics-small-chart"><h3>Equipos</h3><p>Top equipos por activaciones.</p><div class="dashboard-bars compact-bars"><div v-for="team in dashboard.porEquipo.slice(0, 8)" :key="team.nombre" class="dashboard-bar-row" :title="`${team.nombre}: ${formatNumber(team.total)} activaciones`"><span>{{ team.nombre }}</span><div class="metric-track"><div class="metric-fill metric-fill-soft" :style="{ width: anchoBarra(team.total, dashboard.porEquipo.map((item) => ({ value: item.total }))) }"></div></div><strong>{{ formatNumber(team.total) }}</strong></div></div></article>
         <article class="metrics-chart-card metrics-small-chart"><h3>Líderes</h3><p>Registros asociados a líderes disponibles.</p><div v-if="dashboard.topLideres.length" class="dashboard-bars compact-bars"><div v-for="item in dashboard.topLideres.slice(0, 8)" :key="item.label" class="dashboard-bar-row" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><span>{{ item.label }}</span><div class="metric-track"><div class="metric-fill" :style="{ width: anchoBarra(item.value, dashboard.topLideres) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div><p v-else class="metrics-empty-small">Sin líderes resolubles.</p></article>
+        <article class="metrics-chart-card metrics-small-chart"><h3>Errores</h3><p>Activaciones con y sin error.</p><div class="dashboard-bars compact-bars"><div v-for="item in dashboard.porErrores" :key="item.label" class="dashboard-bar-row" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><span>{{ item.label }}</span><div class="metric-track"><div class="metric-fill" :style="{ width: anchoBarra(item.value, dashboard.porErrores) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div></article>
       </section>
       <section class="metrics-bottom-grid">
         <article class="metrics-chart-card metrics-table-card"><h3>Resumen Equipo y Activadores</h3><p>Matriz de activaciones por equipo y mes del rango filtrado.</p><div class="table-wrap metrics-table-scroll heatmap-table-wrap"><table class="tabla-activaciones metrics-heat-table"><thead><tr><th class="sticky-col">Equipo</th><th v-for="mes in equipoMesHeatmap.meses" :key="mes">{{ formatMonth(mes) }}</th><th>Total</th></tr></thead><tbody><tr v-for="row in equipoMesHeatmap.rows" :key="row.equipo"><td class="sticky-col heat-team-name">{{ row.equipo }}</td><td v-for="cell in row.values" :key="`${row.equipo}-${cell.mes}`" class="heat-cell" :style="heatCellStyle(cell.value)" :title="`${row.equipo} · ${formatMonth(cell.mes)}: ${formatNumber(cell.value)} activaciones`">{{ formatNumber(cell.value) }}</td><td class="heat-total">{{ formatNumber(row.total) }}</td></tr></tbody><tfoot><tr><th class="sticky-col">Total</th><td v-for="mes in equipoMesHeatmap.meses" :key="`total-${mes}`" class="heat-total">{{ formatNumber(equipoMesHeatmap.totals[mes]) }}</td><td class="heat-grand-total">{{ formatNumber(equipoMesHeatmap.grandTotal) }}</td></tr></tfoot></table></div></article>
@@ -312,7 +316,7 @@ function exportarDashboard() {
 }
 
 .metrics-four-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   align-items: stretch;
 }
 
