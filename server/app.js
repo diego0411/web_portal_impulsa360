@@ -1500,14 +1500,26 @@ export function createAdminApiApp({ env = process.env } = {}) {
   }))
 
   app.post('/admin/teams', asyncRoute(async (req, res) => {
+    const numero = Number(req.body?.numero)
     const nombre = normalizeText(req.body?.nombre) || INTERNAL_TEAM_NAME
     const plazaId = normalizeNullableText(req.body?.plaza_id)
-    const facturadorId = normalizeNullableText(req.body?.facturador_id)
     const liderId = normalizeNullableText(req.body?.lider_id)
-    if (!plazaId || !facturadorId) {
-      jsonError(res, 400, 'Plaza y facturador son obligatorios.')
+    if (!Number.isSafeInteger(numero) || numero <= 0) {
+      jsonError(res, 400, 'Número de equipo es obligatorio.')
       return
     }
+    if (!plazaId) {
+      jsonError(res, 400, 'Plaza es obligatoria.')
+      return
+    }
+    const { data: duplicateTeam, error: duplicateError } = await adminSupabase.from('equipos')
+      .select('id').eq('numero', numero).limit(1)
+    if (duplicateError && isMissingOrganizationSchema(duplicateError)) {
+      jsonError(res, 409, 'La gestion de equipos estara disponible cuando se habilite el modelo organizacional.')
+      return
+    }
+    if (duplicateError) { jsonError(res, 500, 'No se pudo validar el numero de equipo.', duplicateError.message); return }
+    if (duplicateTeam?.length) { jsonError(res, 409, 'Ya existe un equipo con ese numero.'); return }
     if (liderId) {
       const { data: conflict, error: conflictError } = await adminSupabase.from('equipos')
         .select('id').eq('lider_actual_id', liderId).eq('plaza_id', plazaId).eq('activo', true).limit(1)
@@ -1519,7 +1531,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       if (conflict?.length) { jsonError(res, 409, 'El lider ya dirige un equipo activo en esta plaza.'); return }
     }
     const { data: team, error } = await adminSupabase.from('equipos').insert({
-      nombre, plaza_id: plazaId, facturador_id: facturadorId, lider_actual_id: null, activo: true,
+      numero, nombre, plaza_id: plazaId, lider_actual_id: null, activo: true,
     }).select('*').single()
     if (error) {
       if (isMissingOrganizationSchema(error)) { jsonError(res, 409, 'La gestion de equipos estara disponible cuando se habilite el modelo organizacional.'); return }
@@ -1538,16 +1550,24 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
   app.patch('/admin/teams/:teamId', asyncRoute(async (req, res) => {
     const teamId = normalizeText(req.params.teamId)
+    const numero = Number(req.body?.numero)
     const nombre = normalizeText(req.body?.nombre)
-    const facturadorId = normalizeNullableText(req.body?.facturador_id)
     const liderId = normalizeNullableText(req.body?.lider_id)
     const activo = req.body?.activo
-    if (!teamId || !nombre || !facturadorId || typeof activo !== 'boolean') {
-      jsonError(res, 400, 'Facturador y estado son obligatorios.')
+    if (!teamId || !Number.isSafeInteger(numero) || numero <= 0 || !nombre || typeof activo !== 'boolean') {
+      jsonError(res, 400, 'Numero, nombre y estado son obligatorios.')
       return
     }
+    const { data: duplicateTeam, error: duplicateError } = await adminSupabase.from('equipos')
+      .select('id').eq('numero', numero).neq('id', teamId).limit(1)
+    if (duplicateError && isMissingOrganizationSchema(duplicateError)) {
+      jsonError(res, 409, 'La gestion de equipos estara disponible cuando se habilite el modelo organizacional.')
+      return
+    }
+    if (duplicateError) { jsonError(res, 500, 'No se pudo validar el numero de equipo.', duplicateError.message); return }
+    if (duplicateTeam?.length) { jsonError(res, 409, 'Ya existe un equipo con ese numero.'); return }
     const { error } = await adminSupabase.rpc('actualizar_equipo_organizacion', {
-      p_equipo_id: teamId, p_nombre: nombre, p_facturador_id: facturadorId,
+      p_equipo_id: teamId, p_numero: numero, p_nombre: nombre, p_facturador_id: null,
       p_lider_id: liderId, p_activo: activo, p_inicio: new Date().toISOString(),
       p_motivo: 'Edicion administrativa de equipo',
     })
