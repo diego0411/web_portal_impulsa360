@@ -28,6 +28,25 @@ const ACTIVATION_EDITABLE_FIELDS = new Set([
 ])
 const ALLOWED_STORE_SIZES = new Set(['Pequeña', 'Mediana', 'Grande'])
 const ALLOWED_USER_ROLES = new Set(['activador', 'lider', 'facturador', 'administrador', 'banco'])
+const USER_ROLE_PRIORITY = ['administrador', 'lider', 'banco', 'facturador', 'activador']
+
+function resolveUserRoles(body, previousRoles = [], previousRol = null) {
+  const explicitRoles = Object.prototype.hasOwnProperty.call(body ?? {}, 'roles')
+  const requestedRol = normalizeText(body?.rol)
+  if (requestedRol && !ALLOWED_USER_ROLES.has(requestedRol)) throw new Error('rol invalido.')
+  if (explicitRoles && (!Array.isArray(body.roles) || !body.roles.length ||
+    body.roles.some((rol) => typeof rol !== 'string' || !ALLOWED_USER_ROLES.has(rol)))) {
+    throw new Error('roles debe contener al menos un rol valido.')
+  }
+  const roles = explicitRoles ? [...new Set(body.roles)] : [...new Set([
+    ...(previousRoles.length ? previousRoles : previousRol ? [previousRol] : [])
+      .filter((rol) => !requestedRol || requestedRol === previousRol || rol !== previousRol),
+    ...(requestedRol ? [requestedRol] : []),
+  ])]
+  if (!roles.length) roles.push('activador')
+  if (requestedRol && !roles.includes(requestedRol)) throw new Error('rol debe pertenecer a roles.')
+  return { roles, rol: requestedRol || (roles.includes(previousRol) ? previousRol : USER_ROLE_PRIORITY.find((rol) => roles.includes(rol))) }
+}
 const ALLOWED_USER_STATES = new Set(['activo', 'inhabilitado'])
 const ALLOWED_TEMPORARY_ZONE_TYPES = new Set(['universidad', 'feria', 'evento', 'campana', 'punto_temporal'])
 const REQUIRED_ENV = [
@@ -691,6 +710,29 @@ export function createAdminApiApp({ env = process.env } = {}) {
     },
   })
 
+  async function attachUserRoles(users) {
+    if (!users.length) return users
+    const { data, error } = await adminSupabase.from('activador_roles')
+      .select('usuario_id,rol').in('usuario_id', users.map((user) => user.usuario_id))
+    if (error) throw error
+    return users.map((user) => {
+      const roles = (data ?? []).filter((row) => row.usuario_id === user.usuario_id).map((row) => row.rol)
+      return { ...user, roles: roles.length ? roles : [user.rol] }
+    })
+  }
+
+  async function syncUserRoles(userId, roles) {
+    if (roles.length) {
+      const { error } = await adminSupabase.from('activador_roles')
+        .upsert(roles.map((rol) => ({ usuario_id: userId, rol })), { onConflict: 'usuario_id,rol' })
+      if (error) throw error
+    }
+    let query = adminSupabase.from('activador_roles').delete().eq('usuario_id', userId)
+    if (roles.length) query = query.not('rol', 'in', `(${roles.join(',')})`)
+    const { error } = await query
+    if (error) throw error
+  }
+
   async function enrichUsersWithOrganization(users) {
     if (!users.length) return users
     const teamIds = [...new Set(users.map((user) => user.equipo_id).filter(Boolean))]
@@ -949,7 +991,10 @@ export function createAdminApiApp({ env = process.env } = {}) {
   })
 
   app.use('/portal', requirePortalAuth)
-  app.get('/portal/me', (req, res) => res.json({ profile: req.portalUser }))
+  app.get('/portal/me', asyncRoute(async (req, res) => {
+    const [profile] = await attachUserRoles([req.portalUser])
+    res.json({ profile })
+  }))
   app.get('/portal/users', asyncRoute(async (req, res) => {
     let query = adminSupabase.from('activadores').select('*').order('nombre')
     if (req.portalUser.rol === 'lider') query = query.eq('lider_id', req.portalUser.usuario_id)
@@ -968,7 +1013,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       leaderNames = new Map((leaders ?? []).map((leader) => [leader.usuario_id, leader.nombre]))
     }
     const resolvedUsers = users.map((item) => ({ ...item, lider_nombre: leaderNames.get(item.lider_id) ?? null }))
-    res.json({ users: await enrichUsersWithOrganization(resolvedUsers) })
+    res.json({ users: await attachUserRoles(await enrichUsersWithOrganization(resolvedUsers)) })
   }))
   app.get('/portal/activations', asyncRoute(async (req, res) => {
     const from = Math.max(0, Number.parseInt(String(req.query.from ?? '0'), 10) || 0)
@@ -1042,7 +1087,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
         return
       }
 
-      res.json({ users: await enrichUsersWithOrganization(data ?? []) })
+      res.json({ users: await attachUserRoles(await enrichUsersWithOrganization(data ?? [])) })
     })
   )
 
@@ -1056,10 +1101,15 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const requestedTeamIds = Array.isArray(req.body?.equipo_ids) ? req.body.equipo_ids : []
       const rawNombre = req.body?.nombre
       const rawPlaza = req.body?.plaza
-      const rol = normalizeText(req.body?.rol) || 'activador'
+      let roleSelection
+      try { roleSelection = resolveUserRoles(req.body) }
+      catch (error) { jsonError(res, 400, error.message); return }
+      const { rol, roles } = roleSelection
+      const esLider = roles.includes('lider')
+      const esActivador = roles.includes('activador')
       const estado = normalizeText(req.body?.estado) || 'activo'
       const puedeActivar = rol === 'lider' && req.body?.puede_activar === true
-      let liderId = rol === 'activador' ? normalizeNullableText(req.body?.lider_id) : null
+      let liderId = esActivador ? normalizeNullableText(req.body?.lider_id) : null
       const motivoInhabilitacion = normalizeNullableText(req.body?.motivo_inhabilitacion)
 
       const email = normalizeEmail(rawEmail)
@@ -1069,7 +1119,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       let teamId = null
       let teamPlazaId = null
 
-      if (rol === 'activador') {
+      if (esActivador) {
         const options = await loadOrganizationOptions()
         if (options.available) {
           const selectedTeam = options.equipos.find((team) => team.id === requestedTeamId && team.activo)
@@ -1084,10 +1134,10 @@ export function createAdminApiApp({ env = process.env } = {}) {
           plaza = selectedPlaza.nombre
         }
       }
-      if (rol === 'activador' && !teamId) teamId = await resolveTeamIdForLeader(liderId, plaza)
+      if (esActivador && !teamId) teamId = await resolveTeamIdForLeader(liderId, plaza)
 
       let leaderOrganizationAvailable = false
-      if (rol === 'lider') {
+      if (esLider) {
         const options = await loadOrganizationOptions()
         leaderOrganizationAvailable = options.available
         if (options.available) {
@@ -1191,7 +1241,24 @@ export function createAdminApiApp({ env = process.env } = {}) {
         return
       }
 
-      if (rol === 'lider' && leaderOrganizationAvailable) {
+      try {
+        await syncUserRoles(created.user.id, roles)
+      } catch (error) {
+        const cleanupErrors = []
+        try {
+          const { error: cleanupError } = await adminSupabase.from('activadores').delete().eq('usuario_id', created.user.id)
+          if (cleanupError) cleanupErrors.push(cleanupError.message)
+        } catch (cleanupError) { cleanupErrors.push(cleanupError.message) }
+        try {
+          const { error: cleanupError } = await adminSupabase.auth.admin.deleteUser(created.user.id)
+          if (cleanupError) cleanupErrors.push(cleanupError.message)
+        } catch (cleanupError) { cleanupErrors.push(cleanupError.message) }
+        jsonError(res, 500, cleanupErrors.length ? 'No se pudieron asignar roles; revisar limpieza del usuario.' : 'No se pudieron asignar roles; se elimino el usuario creado.',
+          [error.message, ...cleanupErrors].join('; '))
+        return
+      }
+
+      if (esLider && leaderOrganizationAvailable) {
         try {
           await syncLeaderTeams(created.user.id, requestedTeamIds)
         } catch (error) {
@@ -1202,7 +1269,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
         }
       }
 
-      res.status(201).json({ user: insertedUser })
+      res.status(201).json({ user: { ...insertedUser, roles } })
     })
   )
 
@@ -1605,14 +1672,23 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const previousEmail = normalizeEmail(previousRow.email) || null
       const emailChanged = shouldUpdateEmail && email !== previousEmail
 
-      const rol = requestedRol || previousRow.rol || 'activador'
+      const { data: previousRoleRows, error: previousRolesError } = await adminSupabase
+        .from('activador_roles').select('rol').eq('usuario_id', userId)
+      if (previousRolesError) { jsonError(res, 500, previousRolesError.message); return }
+      const previousRoles = (previousRoleRows ?? []).map((row) => row.rol)
+      let roleSelection
+      try { roleSelection = resolveUserRoles(req.body, previousRoles, previousRow.rol) }
+      catch (error) { jsonError(res, 400, error.message); return }
+      const { rol, roles } = roleSelection
+      const esLider = roles.includes('lider')
+      const esActivador = roles.includes('activador')
       const estado = requestedEstado || previousRow.estado || 'activo'
       const puedeActivar = rol === 'lider' && (
         req.body?.puede_activar === undefined
           ? previousRow.puede_activar === true
           : req.body.puede_activar === true
       )
-      let liderId = rol === 'activador'
+      let liderId = esActivador
         ? (req.body?.lider_id === undefined ? previousRow.lider_id : normalizeNullableText(req.body.lider_id))
         : null
       const motivoInhabilitacion = req.body?.motivo_inhabilitacion === undefined
@@ -1626,7 +1702,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
       let teamId = null
       let teamPlazaId = null
-      if (rol === 'activador') {
+      if (esActivador) {
         const options = await loadOrganizationOptions()
         if (options.available) {
           const selectedTeam = options.equipos.find((team) => team.id === requestedTeamId && team.activo)
@@ -1657,13 +1733,13 @@ export function createAdminApiApp({ env = process.env } = {}) {
       }
 
       let leaderOrganizationAvailable = false
-      const shouldSyncLeaderTeams = rol === 'lider' || previousRow.rol === 'lider'
+      const shouldSyncLeaderTeams = esLider || (previousRoles.length ? previousRoles.includes('lider') : previousRow.rol === 'lider')
       if (shouldSyncLeaderTeams) {
         const options = await loadOrganizationOptions()
         leaderOrganizationAvailable = options.available
         if (options.available) {
-          const effectiveTeamIds = rol === 'lider' ? requestedTeamIds : []
-          if (rol === 'lider' && (!requestedBillerId || !effectiveTeamIds.length)) {
+          const effectiveTeamIds = esLider ? requestedTeamIds : []
+          if (esLider && (!requestedBillerId || !effectiveTeamIds.length)) {
             jsonError(res, 400, 'El facturador y al menos un equipo son obligatorios para un lider.')
             return
           }
@@ -1689,7 +1765,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
           : null,
         motivo_inhabilitacion: estado === 'inhabilitado' ? motivoInhabilitacion : null,
       }
-      if (rol === 'activador' && !teamId) teamId = await resolveTeamIdForLeader(liderId, plaza)
+      if (esActivador && !teamId) teamId = await resolveTeamIdForLeader(liderId, plaza)
       if (teamId) {
         tableUpdatePayload.equipo_id = teamId
         tableUpdatePayload.plaza_base = plaza
@@ -1698,7 +1774,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
           tableUpdatePayload.organizacion_pendiente = false
         }
       }
-      if (rol !== 'activador' && Object.prototype.hasOwnProperty.call(previousRow, 'equipo_id')) {
+      if (!esActivador && Object.prototype.hasOwnProperty.call(previousRow, 'equipo_id')) {
         tableUpdatePayload.equipo_id = null
         if (Object.prototype.hasOwnProperty.call(previousRow, 'plaza_id')) tableUpdatePayload.plaza_id = null
         if (Object.prototype.hasOwnProperty.call(previousRow, 'organizacion_pendiente')) tableUpdatePayload.organizacion_pendiente = false
@@ -1714,6 +1790,44 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
       if (updateTableErr) {
         jsonError(res, 500, updateTableErr.message)
+        return
+      }
+
+      async function rollbackUserUpdate() {
+        const rollbackPayload = {
+            nombre: previousRow.nombre,
+            plaza: previousRow.plaza,
+            email: previousRow.email ?? null,
+            rol: previousRow.rol,
+            estado: previousRow.estado,
+            puede_activar: previousRow.puede_activar,
+            lider_id: previousRow.lider_id,
+            inhabilitado_at: previousRow.inhabilitado_at,
+            motivo_inhabilitacion: previousRow.motivo_inhabilitacion,
+          }
+        if (Object.prototype.hasOwnProperty.call(previousRow, 'equipo_id')) rollbackPayload.equipo_id = previousRow.equipo_id
+        if (Object.prototype.hasOwnProperty.call(previousRow, 'plaza_base')) rollbackPayload.plaza_base = previousRow.plaza_base
+        if (Object.prototype.hasOwnProperty.call(previousRow, 'plaza_id')) rollbackPayload.plaza_id = previousRow.plaza_id
+        if (Object.prototype.hasOwnProperty.call(previousRow, 'organizacion_pendiente')) rollbackPayload.organizacion_pendiente = previousRow.organizacion_pendiente
+        const errors = []
+        try {
+          const { error: rollbackError } = await adminSupabase
+            .from('activadores').update(rollbackPayload).eq('usuario_id', userId)
+          if (rollbackError) errors.push(rollbackError.message)
+        } catch (error) { errors.push(error.message) }
+        try { await syncUserRoles(userId, previousRoles) }
+        catch (error) { errors.push(error.message) }
+        return errors
+      }
+
+      try {
+        await syncUserRoles(userId, roles)
+      } catch (error) {
+        let rollbackErrors
+        try { rollbackErrors = await rollbackUserUpdate() }
+        catch (rollbackError) { rollbackErrors = [rollbackError.message] }
+        jsonError(res, 500, rollbackErrors.length ? 'No se pudieron sincronizar roles; rollback incompleto.' : 'No se pudieron sincronizar roles; cambios revertidos.',
+          [error.message, ...rollbackErrors].join('; '))
         return
       }
 
@@ -1736,37 +1850,22 @@ export function createAdminApiApp({ env = process.env } = {}) {
         }
       }
 
-      const { error: updateAuthErr } = await adminSupabase.auth.admin.updateUserById(
-        userId,
-        authUpdatePayload
-      )
+      let updateAuthErr
+      try {
+        const result = await adminSupabase.auth.admin.updateUserById(userId, authUpdatePayload)
+        updateAuthErr = result.error
+      } catch (error) { updateAuthErr = error }
 
       if (updateAuthErr) {
-        const rollbackPayload = {
-            nombre: previousRow.nombre,
-            plaza: previousRow.plaza,
-            email: previousRow.email ?? null,
-            rol: previousRow.rol,
-            estado: previousRow.estado,
-            puede_activar: previousRow.puede_activar,
-            lider_id: previousRow.lider_id,
-            inhabilitado_at: previousRow.inhabilitado_at,
-            motivo_inhabilitacion: previousRow.motivo_inhabilitacion,
-          }
-        if (Object.prototype.hasOwnProperty.call(previousRow, 'equipo_id')) rollbackPayload.equipo_id = previousRow.equipo_id
-        if (Object.prototype.hasOwnProperty.call(previousRow, 'plaza_base')) rollbackPayload.plaza_base = previousRow.plaza_base
-        if (Object.prototype.hasOwnProperty.call(previousRow, 'plaza_id')) rollbackPayload.plaza_id = previousRow.plaza_id
-        if (Object.prototype.hasOwnProperty.call(previousRow, 'organizacion_pendiente')) rollbackPayload.organizacion_pendiente = previousRow.organizacion_pendiente
-        await adminSupabase
-          .from('activadores')
-          .update(rollbackPayload)
-          .eq('usuario_id', userId)
+        let rollbackErrors
+        try { rollbackErrors = await rollbackUserUpdate() }
+        catch (error) { rollbackErrors = [error.message] }
 
         jsonError(
           res,
           500,
           'No se pudo actualizar Auth. Se intento revertir el cambio en tabla para mantener consistencia.',
-          updateAuthErr.message
+          [updateAuthErr.message, ...rollbackErrors].join('; ')
         )
         return
       }
@@ -1774,7 +1873,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       if (shouldSyncLeaderTeams) {
         try {
           if (leaderOrganizationAvailable) {
-            await syncLeaderTeams(userId, rol === 'lider' ? requestedTeamIds : [])
+            await syncLeaderTeams(userId, esLider ? requestedTeamIds : [])
           }
         } catch (error) {
           jsonError(res, 409, 'El usuario se actualizo, pero no se pudieron actualizar sus equipos.', error?.message)
@@ -1784,6 +1883,8 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
       res.json({
         ok: true,
+        rol,
+        roles,
         emailUpdated: emailChanged,
         passwordUpdated: Boolean(password),
       })
