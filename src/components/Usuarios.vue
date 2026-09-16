@@ -28,7 +28,7 @@ const filtroPlaza = ref('')
 const filtroEquipoId = ref('')
 const organizacion = ref({ available: false, message: '', plazas: [], equipos: [], facturadores: [] })
 
-const nuevo = ref({ email: '', password: '', nombre: '', plaza: '', plaza_id: '', equipo_id: '', equipo_ids: [], facturador_id: '', rol: 'activador', roles: ['activador'], estado: 'activo', lider_id: '', motivo_inhabilitacion: '', puede_activar: false })
+const nuevo = ref({ email: '', password: '', nombre: '', plaza: '', plaza_id: '', equipo_id: '', equipo_ids: [], facturador_equipo_ids: [], rol: 'activador', roles: ['activador'], estado: 'activo', lider_id: '', motivo_inhabilitacion: '', puede_activar: false })
 const editandoId = ref(null)
 const edicion = ref({})
 const modalInhabilitar = ref(false)
@@ -72,7 +72,8 @@ function equiposPara(form, rol) {
   return organizacion.value.equipos.filter((equipo) => {
     if (!equipo.activo) return false
     if (rol === 'activador') return true
-    if (rol === 'lider') return !form.facturador_id || equipo.facturador_id === form.facturador_id
+    if (rol === 'lider') return true
+    if (rol === 'facturador') return true
     return false
   })
 }
@@ -89,7 +90,8 @@ function equiposDelUsuario(usuario) {
 function ajustarRol(form) {
   form.rol = normalizarRol(form.rol)
   if (!esRol(form, 'activador')) { form.equipo_id = ''; form.plaza_id = ''; form.lider_id = ''; form.plaza = '' }
-  if (!esRol(form, 'lider')) { form.equipo_ids = []; form.facturador_id = ''; form.puede_activar = false }
+  if (!esRol(form, 'lider')) { form.equipo_ids = []; form.puede_activar = false }
+  if (!esRol(form, 'facturador')) form.facturador_equipo_ids = []
 }
 function ajustarPlaza(form) {
   form.equipo_id = ''
@@ -116,10 +118,6 @@ function validarFormulario(form, esEdicion = false) {
   if (!isValidEmail(normalizeEmail(form.email))) return 'Ingresa un correo valido.'
   if (form.password && !/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{10,}$/.test(form.password)) return 'La contrasena debe tener al menos 10 caracteres, mayuscula, minuscula, numero y simbolo.'
   if (form.estado === 'inhabilitado' && !form.motivo_inhabilitacion?.trim()) return 'Ingresa el motivo de inhabilitacion.'
-  if (organizacion.value.available && esRol(form, 'lider')) {
-    const seleccionados = organizacion.value.equipos.filter((e) => form.equipo_ids?.includes(e.id))
-    if (new Set(seleccionados.map((e) => e.plaza_id)).size !== seleccionados.length) return 'Un lider no puede tener dos equipos activos en la misma plaza.'
-  }
   return null
 }
 function payloadUsuario(form) {
@@ -133,6 +131,9 @@ function payloadUsuario(form) {
   if (organizacion.value.available && esRol(form, 'lider')) {
     payload.equipo_ids = form.equipo_ids ?? []
   }
+  if (organizacion.value.available && esRol(form, 'facturador')) {
+    payload.facturador_equipo_ids = form.facturador_equipo_ids ?? []
+  }
   return payload
 }
 async function registrarUsuario() {
@@ -141,7 +142,7 @@ async function registrarUsuario() {
   procesando.value = true
   try {
     await requestAdmin('/admin/users', { method: 'POST', body: { ...payloadUsuario(nuevo.value), password: nuevo.value.password } })
-    nuevo.value = { email: '', password: '', nombre: '', plaza: '', plaza_id: '', equipo_id: '', equipo_ids: [], facturador_id: '', rol: 'activador', roles: ['activador'], estado: 'activo', lider_id: '', motivo_inhabilitacion: '', puede_activar: false }
+    nuevo.value = { email: '', password: '', nombre: '', plaza: '', plaza_id: '', equipo_id: '', equipo_ids: [], facturador_equipo_ids: [], rol: 'activador', roles: ['activador'], estado: 'activo', lider_id: '', motivo_inhabilitacion: '', puede_activar: false }
     await cargarUsuarios(); notifySuccess('Usuario registrado correctamente.')
   } catch (error) { notifyError(getErrorMessage(error)) }
   finally { procesando.value = false }
@@ -150,7 +151,7 @@ function editarUsuario(usuario) {
   editandoId.value = usuario.usuario_id
   const equipo = organizacion.value.equipos.find((item) => item.id === usuario.equipo_id)
   const equiposLider = organizacion.value.equipos.filter((item) => item.lider_actual_id === usuario.usuario_id)
-  edicion.value = { nombre: usuario.nombre ?? '', email: usuario.email ?? '', plaza: usuario.plaza_base ?? usuario.plaza ?? '', plaza_id: equipo?.plaza_id ?? '', equipo_id: usuario.equipo_id ?? '', equipo_ids: equiposLider.map((item) => item.id), facturador_id: equiposLider[0]?.facturador_id ?? '', password: '', rol: normalizarRol(usuario.rol), roles: rolesUsuario(usuario), estado: usuario.estado ?? 'activo', lider_id: usuario.lider_id ?? '', motivo_inhabilitacion: usuario.motivo_inhabilitacion ?? '', puede_activar: usuario.puede_activar === true }
+  edicion.value = { nombre: usuario.nombre ?? '', email: usuario.email ?? '', plaza: usuario.plaza_base ?? usuario.plaza ?? '', plaza_id: equipo?.plaza_id ?? '', equipo_id: usuario.equipo_id ?? '', equipo_ids: equiposLider.map((item) => item.id), facturador_equipo_ids: usuario.equipos_facturados?.map((item) => item.id) ?? [], password: '', rol: normalizarRol(usuario.rol), roles: rolesUsuario(usuario), estado: usuario.estado ?? 'activo', lider_id: usuario.lider_id ?? '', motivo_inhabilitacion: usuario.motivo_inhabilitacion ?? '', puede_activar: usuario.puede_activar === true }
 }
 function cancelarEdicion() { editandoId.value = null; edicion.value = {} }
 async function guardarEdicion() {
@@ -268,9 +269,10 @@ onMounted(cargarUsuarios)
             <select v-else v-model="nuevo.lider_id" class="input-texto"><option value="">Sin lider</option><option v-for="lider in lideresActivos" :key="lider.usuario_id" :value="lider.usuario_id">{{ lider.nombre }}</option></select>
           </template>
           <template v-if="esRol(nuevo, 'lider') && organizacion.available">
-            <label><span class="field-label">Equipos por plaza (opcional)</span><select v-model="nuevo.equipo_ids" class="input-texto" multiple><option v-for="equipo in equiposPara(nuevo, 'lider')" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select></label>
+            <label><span class="field-label">Equipos liderados (opcional)</span><select v-model="nuevo.equipo_ids" class="input-texto" multiple><option v-for="equipo in equiposPara(nuevo, 'lider')" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select></label>
             <label class="scope-pill"><input v-model="nuevo.puede_activar" type="checkbox"> Puede realizar activaciones</label>
           </template>
+          <label v-if="esRol(nuevo, 'facturador') && organizacion.available"><span class="field-label">Equipos facturados (opcional)</span><select v-model="nuevo.facturador_equipo_ids" class="input-texto" multiple><option v-for="equipo in equiposPara(nuevo, 'facturador')" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select></label>
           <textarea v-if="nuevo.estado === 'inhabilitado'" v-model="nuevo.motivo_inhabilitacion" class="input-texto" placeholder="Motivo de inhabilitacion"></textarea>
           <button type="submit" class="boton boton-primario" :disabled="procesando">{{ procesando ? 'Guardando...' : 'Registrar' }}</button>
         </form>
@@ -315,10 +317,10 @@ onMounted(cargarUsuarios)
                 <select v-if="organizacion.available" v-model="edicion.equipo_id" class="input-editar"><option value="">Sin equipo (asignar despues)</option><option v-for="equipo in equiposPara(edicion, 'activador')" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select>
                 <select v-else v-model="edicion.lider_id" class="input-editar"><option value="">Sin lider</option><option v-for="lider in lideresActivos" :key="lider.usuario_id" :value="lider.usuario_id">{{ lider.nombre }}</option></select>
               </template>
-              <template v-if="esRol(edicion, 'lider') && organizacion.available"><select v-model="edicion.equipo_ids" class="input-editar" multiple><option v-for="equipo in equiposPara(edicion, 'lider')" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select></template><span v-if="!esRol(edicion, 'activador') && !(esRol(edicion, 'lider') && organizacion.available)">-</span>
+              <label v-if="esRol(edicion, 'lider') && organizacion.available"><span class="field-label">Equipos liderados</span><select v-model="edicion.equipo_ids" class="input-editar" multiple><option v-for="equipo in equiposPara(edicion, 'lider')" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select></label><span v-if="!esRol(edicion, 'activador') && !(esRol(edicion, 'lider') && organizacion.available)">-</span>
             </td>
             <td>{{ esRol(edicion, 'activador') ? liderDelEquipo(edicion) : '-' }}</td>
-            <td>{{ esRol(edicion, 'activador') ? (usuario.facturador_nombre || '-') : '-' }}</td>
+            <td><label v-if="esRol(edicion, 'facturador') && organizacion.available"><span class="field-label">Equipos facturados</span><select v-model="edicion.facturador_equipo_ids" class="input-editar" multiple><option v-for="equipo in equiposPara(edicion, 'facturador')" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select></label><span v-else>{{ esRol(edicion, 'activador') ? (usuario.facturador_nombre || '-') : '-' }}</span></td>
             <td><div role="group" aria-label="Roles" class="meta-row"><label v-for="rol in roles" :key="rol" class="scope-pill"><input v-model="edicion.roles" type="checkbox" :value="rol" @change="ajustarRol(edicion)"> {{ etiqueta(rol) }}</label></div></td>
             <td><label v-if="esRol(edicion, 'lider')" class="scope-pill"><input v-model="edicion.puede_activar" type="checkbox"> Sí</label><span v-else>-</span></td>
             <td><select v-model="edicion.estado" class="input-editar"><option v-for="estado in estados" :key="estado" :value="estado">{{ etiqueta(estado) }}</option></select><textarea v-if="edicion.estado === 'inhabilitado'" v-model="edicion.motivo_inhabilitacion" class="input-editar" placeholder="Motivo obligatorio"></textarea></td>

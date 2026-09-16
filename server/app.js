@@ -884,6 +884,89 @@ export function createAdminApiApp({ env = process.env } = {}) {
     if (error) throw error
   }
 
+  async function syncFacturadorTeams(userId, nombre, teamIds, hasFacturadorRole) {
+    const normalizedIds = [...new Set((teamIds ?? []).map(normalizeText).filter(Boolean))]
+    const { data: linkedBiller, error: linkedError } = await adminSupabase.from('facturadores')
+      .select('id').eq('usuario_id', userId).maybeSingle()
+    if (linkedError) throw linkedError
+
+    if (!hasFacturadorRole) {
+      if (linkedBiller) {
+        const { error } = await adminSupabase.from('facturadores')
+          .update({ usuario_id: null }).eq('id', linkedBiller.id).eq('usuario_id', userId)
+        if (error) throw error
+      }
+      return
+    }
+
+    const { data: role, error: roleError } = await adminSupabase.from('activador_roles')
+      .select('usuario_id').eq('usuario_id', userId).eq('rol', 'facturador').maybeSingle()
+    if (roleError) throw roleError
+    if (!role) throw new Error('El usuario debe tener rol facturador para asignar equipos facturados.')
+
+    let biller = linkedBiller
+    if (!biller) {
+      const { data: selectedTeams, error: selectedTeamsError } = normalizedIds.length
+        ? await adminSupabase.from('equipos').select('facturador_id').in('id', normalizedIds)
+        : { data: [], error: null }
+      if (selectedTeamsError) throw selectedTeamsError
+      const existingBillerIds = [...new Set((selectedTeams ?? []).map((team) => team.facturador_id).filter(Boolean))]
+      if (existingBillerIds.length === 1) {
+        const { data: availableBiller, error: availableError } = await adminSupabase.from('facturadores')
+          .select('id').eq('id', existingBillerIds[0]).is('usuario_id', null).maybeSingle()
+        if (availableError) throw availableError
+        if (availableBiller) {
+          const { data: linked, error: linkError } = await adminSupabase.from('facturadores')
+            .update({ usuario_id: userId, nombre }).eq('id', availableBiller.id).is('usuario_id', null)
+            .select('id').single()
+          if (linkError) throw linkError
+          biller = linked
+        }
+      }
+    }
+    if (!biller) {
+      const codigo = `USR-${userId}`
+      const { data: reusable, error: reusableError } = await adminSupabase.from('facturadores')
+        .select('id').eq('codigo', codigo).is('usuario_id', null).maybeSingle()
+      if (reusableError) throw reusableError
+      if (reusable) {
+        const { data: linked, error: linkError } = await adminSupabase.from('facturadores')
+          .update({ usuario_id: userId, nombre }).eq('id', reusable.id).is('usuario_id', null)
+          .select('id').single()
+        if (linkError) throw linkError
+        biller = linked
+      } else {
+        const { data: created, error: createError } = await adminSupabase.from('facturadores').insert({
+          codigo,
+          nombre,
+          usuario_id: userId,
+        }).select('id').single()
+        if (createError) throw createError
+        biller = created
+      }
+    } else {
+      const { error: nameError } = await adminSupabase.from('facturadores')
+        .update({ nombre }).eq('id', biller.id)
+      if (nameError) throw nameError
+    }
+
+    const { data: currentTeams, error: currentError } = await adminSupabase.from('equipos')
+      .select('id').eq('facturador_id', biller.id)
+    if (currentError) throw currentError
+    const removedIds = (currentTeams ?? []).map((team) => team.id).filter((id) => !normalizedIds.includes(id))
+
+    if (removedIds.length) {
+      const { error } = await adminSupabase.from('equipos')
+        .update({ facturador_id: null }).in('id', removedIds).eq('facturador_id', biller.id)
+      if (error) throw error
+    }
+    if (normalizedIds.length) {
+      const { error } = await adminSupabase.from('equipos')
+        .update({ facturador_id: biller.id }).in('id', normalizedIds)
+      if (error) throw error
+    }
+  }
+
   async function enrichUsersWithOrganization(users) {
     if (!users.length) return users
     const teamIds = [...new Set(users.map((user) => user.equipo_id).filter(Boolean))]
@@ -922,7 +1005,20 @@ export function createAdminApiApp({ env = process.env } = {}) {
         ledTeamsError = legacyLedTeams.error
       }
       if (ledTeamsError) return users
-      teams = [...new Map([...(teams ?? []), ...(ledTeams ?? [])].map((team) => [team.id, team])).values()]
+
+      let linkedBillers = []
+      if (userIds.length) {
+        const linkedResult = await adminSupabase.from('facturadores')
+          .select('id,codigo,nombre,usuario_id').in('usuario_id', userIds)
+        if (!linkedResult.error) linkedBillers = linkedResult.data ?? []
+      }
+      const linkedBillerIds = linkedBillers.map((item) => item.id)
+      const { data: billedTeams, error: billedTeamsError } = linkedBillerIds.length
+        ? await adminSupabase.from('equipos')
+          .select('id,numero,nombre,facturador_id,lider_actual_id,plaza_id,activo').in('facturador_id', linkedBillerIds)
+        : { data: [], error: null }
+      if (billedTeamsError) return users
+      teams = [...new Map([...(teams ?? []), ...(ledTeams ?? []), ...(billedTeams ?? [])].map((team) => [team.id, team])).values()]
 
       const facturadorIds = [...new Set((teams ?? []).map((team) => team.facturador_id).filter(Boolean))]
       const plazaIds = [...new Set((teams ?? []).map((team) => team.plaza_id).filter(Boolean))]
@@ -941,7 +1037,8 @@ export function createAdminApiApp({ env = process.env } = {}) {
       if (billersError || plazasError || leadersError) return users
 
       const teamsById = new Map((teams ?? []).map((team) => [team.id, team]))
-      const billersById = new Map((billers ?? []).map((biller) => [biller.id, biller]))
+      const billersById = new Map([...(billers ?? []), ...linkedBillers].map((biller) => [biller.id, biller]))
+      const billerByUser = new Map(linkedBillers.map((biller) => [biller.usuario_id, biller]))
       const plazasById = new Map((plazas ?? []).map((plaza) => [plaza.id, plaza]))
       const leadersById = new Map((leaders ?? []).map((leader) => [leader.usuario_id, leader]))
       const temporaryByUser = new Map((temporaryPlazas ?? []).map((item) => [item.activador_id, item]))
@@ -951,6 +1048,10 @@ export function createAdminApiApp({ env = process.env } = {}) {
         const temporary = temporaryByUser.get(user.usuario_id)
         const teamPlaza = plazasById.get(team?.plaza_id)
         const assignedTeams = (teams ?? []).filter((item) => item.lider_actual_id === user.usuario_id)
+        const userBiller = billerByUser.get(user.usuario_id)
+        const billedUserTeams = userBiller
+          ? (teams ?? []).filter((item) => item.facturador_id === userBiller.id)
+          : []
         const assignedBiller = billersById.get(assignedTeams[0]?.facturador_id)
         return {
           ...user,
@@ -970,11 +1071,18 @@ export function createAdminApiApp({ env = process.env } = {}) {
             facturador: billersById.get(item.facturador_id)?.nombre ?? null,
             activo: item.activo,
           })),
+          equipos_facturados: billedUserTeams.map((item) => ({
+            id: item.id,
+            numero: item.numero,
+            nombre: item.nombre,
+            plaza: plazasById.get(item.plaza_id)?.nombre ?? null,
+            activo: item.activo,
+          })),
           lider_id: team?.lider_actual_id ?? user.lider_id ?? null,
           lider_nombre: leadersById.get(team?.lider_actual_id ?? user.lider_id)?.nombre ?? null,
-          facturador_id: biller?.id ?? assignedBiller?.id ?? null,
-          facturador_codigo: biller?.codigo ?? assignedBiller?.codigo ?? null,
-          facturador_nombre: biller?.nombre ?? assignedBiller?.nombre ?? null,
+          facturador_id: userBiller?.id ?? biller?.id ?? assignedBiller?.id ?? null,
+          facturador_codigo: userBiller?.codigo ?? biller?.codigo ?? assignedBiller?.codigo ?? null,
+          facturador_nombre: userBiller?.nombre ?? biller?.nombre ?? assignedBiller?.nombre ?? null,
         }
       })
     } catch {
@@ -1027,7 +1135,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
     const [plazasResult, teamsResult, billersResult] = await Promise.all([
       adminSupabase.from('plazas').select('id,nombre,nombre_normalizado,activa').eq('activa', true).order('nombre'),
       adminSupabase.from('equipos').select('id,numero,nombre,facturador_id,plaza_id,lider_actual_id,activo').order('numero'),
-      adminSupabase.from('facturadores').select('id,codigo,nombre,activo').eq('activo', true).order('nombre'),
+      adminSupabase.from('facturadores').select('id,codigo,nombre,usuario_id,activo').eq('activo', true).order('nombre'),
     ])
     const firstError = plazasResult.error || teamsResult.error || billersResult.error
     if (firstError) {
@@ -1251,8 +1359,8 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const rawEmail = req.body?.email
       const rawPassword = req.body?.password
       const requestedTeamId = normalizeNullableText(req.body?.equipo_id)
-      const requestedBillerId = normalizeNullableText(req.body?.facturador_id)
       const requestedTeamIds = Array.isArray(req.body?.equipo_ids) ? req.body.equipo_ids : []
+      const requestedBillerTeamIds = Array.isArray(req.body?.facturador_equipo_ids) ? req.body.facturador_equipo_ids : []
       const rawNombre = req.body?.nombre
       const rawPlaza = req.body?.plaza
       let roleSelection
@@ -1261,6 +1369,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const { rol, roles } = roleSelection
       const esLider = roles.includes('lider')
       const esActivador = roles.includes('activador')
+      const esFacturador = roles.includes('facturador')
       const estado = normalizeText(req.body?.estado) || 'activo'
       const puedeActivar = rol === 'lider' && req.body?.puede_activar === true
       let liderId = esActivador ? normalizeNullableText(req.body?.lider_id) : null
@@ -1301,12 +1410,17 @@ export function createAdminApiApp({ env = process.env } = {}) {
             jsonError(res, 400, 'Uno o mas equipos seleccionados no existen o estan inactivos.')
             return
           }
-          if (requestedBillerId && selectedTeams.some((team) => team.facturador_id !== requestedBillerId)) {
-            jsonError(res, 400, 'Todos los equipos deben pertenecer al facturador seleccionado.')
-            return
-          }
-          if (new Set(selectedTeams.map((team) => team.plaza_id)).size !== selectedTeams.length) {
-            jsonError(res, 409, 'Un lider no puede tener dos equipos activos en la misma plaza.')
+        }
+      }
+
+      let billerOrganizationAvailable = false
+      if (esFacturador) {
+        const options = await loadOrganizationOptions()
+        billerOrganizationAvailable = options.available
+        if (options.available) {
+          const selectedTeams = options.equipos.filter((team) => requestedBillerTeamIds.includes(team.id) && team.activo)
+          if (selectedTeams.length !== new Set(requestedBillerTeamIds).size) {
+            jsonError(res, 400, 'Uno o mas equipos facturados no existen o estan inactivos.')
             return
           }
         }
@@ -1421,6 +1535,17 @@ export function createAdminApiApp({ env = process.env } = {}) {
         }
       }
 
+      if (esFacturador && billerOrganizationAvailable) {
+        try {
+          await syncFacturadorTeams(created.user.id, nombre, requestedBillerTeamIds, true)
+        } catch (error) {
+          await adminSupabase.from('activadores').delete().eq('usuario_id', created.user.id)
+          await adminSupabase.auth.admin.deleteUser(created.user.id)
+          jsonError(res, 409, 'No se pudieron asignar los equipos al facturador.', error?.message)
+          return
+        }
+      }
+
       res.status(201).json({ user: { ...insertedUser, roles } })
     })
   )
@@ -1520,16 +1645,6 @@ export function createAdminApiApp({ env = process.env } = {}) {
     }
     if (duplicateError) { jsonError(res, 500, 'No se pudo validar el numero de equipo.', duplicateError.message); return }
     if (duplicateTeam?.length) { jsonError(res, 409, 'Ya existe un equipo con ese numero.'); return }
-    if (liderId) {
-      const { data: conflict, error: conflictError } = await adminSupabase.from('equipos')
-        .select('id').eq('lider_actual_id', liderId).eq('plaza_id', plazaId).eq('activo', true).limit(1)
-      if (conflictError && isMissingOrganizationSchema(conflictError)) {
-        jsonError(res, 409, 'La gestion de equipos estara disponible cuando se habilite el modelo organizacional.')
-        return
-      }
-      if (conflictError) { jsonError(res, 500, 'No se pudo validar el equipo.', conflictError.message); return }
-      if (conflict?.length) { jsonError(res, 409, 'El lider ya dirige un equipo activo en esta plaza.'); return }
-    }
     const { data: team, error } = await adminSupabase.from('equipos').insert({
       numero, nombre, plaza_id: plazaId, lider_actual_id: null, activo: true,
     }).select('*').single()
@@ -1787,8 +1902,8 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const rawEmailConfirm = req.body?.emailConfirm
       const rawPassword = req.body?.password
       const requestedTeamId = normalizeNullableText(req.body?.equipo_id)
-      const requestedBillerId = normalizeNullableText(req.body?.facturador_id)
       const requestedTeamIds = Array.isArray(req.body?.equipo_ids) ? req.body.equipo_ids : []
+      const requestedBillerTeamIds = Array.isArray(req.body?.facturador_equipo_ids) ? req.body.facturador_equipo_ids : []
       const requestedRol = normalizeText(req.body?.rol)
       const requestedEstado = normalizeText(req.body?.estado)
 
@@ -1854,6 +1969,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const { rol, roles } = roleSelection
       const esLider = roles.includes('lider')
       const esActivador = roles.includes('activador')
+      const esFacturador = roles.includes('facturador')
       const estado = requestedEstado || previousRow.estado || 'activo'
       const puedeActivar = rol === 'lider' && (
         req.body?.puede_activar === undefined
@@ -1913,10 +2029,25 @@ export function createAdminApiApp({ env = process.env } = {}) {
           const effectiveTeamIds = esLider ? requestedTeamIds : []
 
           const selectedTeams = options.equipos.filter((team) => effectiveTeamIds.includes(team.id))
-          if (selectedTeams.length !== new Set(effectiveTeamIds).size ||
-            (requestedBillerId && selectedTeams.some((team) => team.facturador_id !== requestedBillerId)) ||
-            new Set(selectedTeams.map((team) => team.plaza_id)).size !== selectedTeams.length) {
+          if (selectedTeams.length !== new Set(effectiveTeamIds).size) {
             jsonError(res, 409, 'La asignacion de equipos del lider no es valida.')
+            return
+          }
+        }
+      }
+
+      const hadFacturadorRole = previousRoles.length
+        ? previousRoles.includes('facturador')
+        : previousRow.rol === 'facturador'
+      const shouldSyncBillerTeams = esFacturador || hadFacturadorRole
+      let billerOrganizationAvailable = false
+      if (shouldSyncBillerTeams) {
+        const options = await loadOrganizationOptions()
+        billerOrganizationAvailable = options.available
+        if (options.available && esFacturador) {
+          const selectedTeams = options.equipos.filter((team) => requestedBillerTeamIds.includes(team.id) && team.activo)
+          if (selectedTeams.length !== new Set(requestedBillerTeamIds).size) {
+            jsonError(res, 409, 'La asignacion de equipos del facturador no es valida.')
             return
           }
         }
@@ -2049,6 +2180,15 @@ export function createAdminApiApp({ env = process.env } = {}) {
           }
         } catch (error) {
           jsonError(res, 409, 'El usuario se actualizo, pero no se pudieron actualizar sus equipos.', error?.message)
+          return
+        }
+      }
+
+      if (shouldSyncBillerTeams && billerOrganizationAvailable) {
+        try {
+          await syncFacturadorTeams(userId, nombre, esFacturador ? requestedBillerTeamIds : [], esFacturador)
+        } catch (error) {
+          jsonError(res, 409, 'El usuario se actualizo, pero no se pudieron actualizar sus equipos facturados.', error?.message)
           return
         }
       }

@@ -1,3 +1,8 @@
+drop index if exists public.ux_equipos_lider_plaza_activo;
+
+alter table public.equipo_lider_historial
+  drop constraint if exists lider_plaza_unico_periodo;
+
 create or replace function public.asignar_lider_equipo(
   p_equipo_id uuid, p_lider_id uuid, p_inicio timestamptz default now(), p_motivo text default null
 )
@@ -50,13 +55,6 @@ begin
   if (select count(*) from public.equipos where id = any(v_ids) and activo) <> cardinality(v_ids) then
     raise exception 'Uno o mas equipos no existen o estan inactivos';
   end if;
-  if exists (
-    select plaza_id from public.equipos where id = any(v_ids)
-    group by plaza_id having count(*) > 1
-  ) then
-    raise exception 'Un lider no puede dirigir dos equipos activos en la misma plaza';
-  end if;
-
   update public.equipo_lider_historial set fin = p_inicio
   where fin is null and inicio < p_inicio
     and (lider_id = p_lider_id or equipo_id = any(v_ids))
@@ -117,11 +115,6 @@ begin
     join public.activador_roles ar on ar.usuario_id = a.usuario_id and ar.rol = 'lider'
     where a.usuario_id = v_lider_final and a.estado = 'activo'
   ) then raise exception 'El lider no existe o esta inactivo'; end if;
-  if v_lider_final is not null and exists (
-    select 1 from public.equipos
-    where id <> p_equipo_id and activo and lider_actual_id = v_lider_final and plaza_id = v_equipo.plaza_id
-  ) then raise exception 'El lider ya dirige un equipo activo en esta plaza'; end if;
-
   if v_equipo.lider_actual_id is distinct from v_lider_final or v_equipo.activo is distinct from p_activo then
     update public.equipo_lider_historial set fin = p_inicio
     where equipo_id = p_equipo_id and fin is null and inicio < p_inicio;

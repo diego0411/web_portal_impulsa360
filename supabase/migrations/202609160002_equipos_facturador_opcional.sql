@@ -42,11 +42,6 @@ begin
     join public.activador_roles ar on ar.usuario_id = a.usuario_id and ar.rol = 'lider'
     where a.usuario_id = v_lider_final and a.estado = 'activo'
   ) then raise exception 'El lider no existe o esta inactivo'; end if;
-  if v_lider_final is not null and exists (
-    select 1 from public.equipos
-    where id <> p_equipo_id and activo and lider_actual_id = v_lider_final and plaza_id = v_equipo.plaza_id
-  ) then raise exception 'El lider ya dirige un equipo activo en esta plaza'; end if;
-
   if v_equipo.lider_actual_id is distinct from v_lider_final or v_equipo.activo is distinct from p_activo then
     update public.equipo_lider_historial set fin = p_inicio
     where equipo_id = p_equipo_id and fin is null and inicio < p_inicio;
