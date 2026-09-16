@@ -16,7 +16,7 @@ const editandoId = ref(null)
 const edicion = ref({})
 const detalle = ref(null)
 
-const lideres = computed(() => usuarios.value.filter((u) => u.rol === 'lider' && u.estado === 'activo'))
+const lideres = computed(() => usuarios.value.filter((u) => rolesUsuario(u).includes('lider') && u.estado === 'activo'))
 const plazasCatalogo = computed(() => deduplicarPlazasCatalogo(catalogo.value.plazas))
 const usuariosPorId = computed(() => Object.fromEntries(usuarios.value.map((u) => [u.usuario_id, u])))
 const plazasPorId = computed(() => Object.fromEntries(plazasCatalogo.value.map((p) => [p.id, p])))
@@ -26,6 +26,8 @@ function request(path, options = {}) {
   return adminApiRequest({ baseUrl: apiBaseUrl, path, token: session.value?.access_token, ...options })
 }
 function errorMessage(error) { return error instanceof Error ? error.message : 'Error inesperado.' }
+function normalizarRol(value) { return String(value ?? '').trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase() }
+function rolesUsuario(usuario) { return Array.isArray(usuario?.roles) ? usuario.roles.map(normalizarRol) : [normalizarRol(usuario?.rol)] }
 function liderNombre(id) { return id ? (usuariosPorId.value[id]?.nombre ?? 'Lider no disponible') : 'Sin lider' }
 
 async function cargar() {

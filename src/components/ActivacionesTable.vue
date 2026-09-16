@@ -1,7 +1,6 @@
 <script setup>
 import { computed, ref, onMounted } from 'vue'
 import { adminApiRequest } from '../lib/adminApiClient'
-import { useAdminApiAuth } from '../lib/adminAuthStore'
 import {
   notifyError,
   notifyInfo,
@@ -13,6 +12,8 @@ import { isValidEmail, normalizeEmail, normalizeText } from '../lib/textUtils'
 import { useAuth } from '../lib/authStore'
 import { AUTH_ENABLED } from '../lib/featureFlags'
 import { nombreLegiblePlaza } from '../lib/plazas'
+import { neutralizeExportRow, neutralizeSpreadsheetFormula } from '../lib/exportSafety'
+import { logClientError } from '../lib/logging'
 
 const props = defineProps({
   activaciones: {
@@ -22,9 +23,6 @@ const props = defineProps({
 })
 const emit = defineEmits(['activacion-eliminada', 'activacion-actualizada'])
 
-const storageBaseUrl = String(import.meta.env.VITE_SUPABASE_URL ?? '').replace(/\/$/, '')
-const storageBucket =
-  import.meta.env.VITE_STORAGE_BUCKET_ACTIVACIONES ?? 'fotos-activaciones'
 const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(/\/$/, '')
 const boliviaDateTimeFormatter = new Intl.DateTimeFormat('es-BO', {
   dateStyle: 'short',
@@ -44,11 +42,10 @@ const editandoActivacion = ref(false)
 const guardandoEdicion = ref(false)
 const formularioEdicion = ref({})
 const motivoEdicion = ref('')
-const { username: apiUser, password: apiPass, hasCredentials } = useAdminApiAuth()
 const { session, isAdmin } = useAuth()
 const canAdminister = computed(() => !AUTH_ENABLED || isAdmin.value)
 const canEditActivaciones = computed(() =>
-  AUTH_ENABLED ? Boolean(session.value?.access_token && isAdmin.value) : hasCredentials.value
+  Boolean(session.value?.access_token && canAdminister.value)
 )
 
 const opcionesOrg = ref({ available: false, plazas: [] })
@@ -115,7 +112,7 @@ function csvEscape(value) {
     return ''
   }
 
-  const normalized = String(value).replace(/"/g, '""')
+  const normalized = String(neutralizeSpreadsheetFormula(value)).replace(/"/g, '""')
 
   if (/[";\r\n]/.test(normalized)) {
     return `"${normalized}"`
@@ -124,31 +121,16 @@ function csvEscape(value) {
   return normalized
 }
 
-function getFotoPublicUrl(fotoUrl) {
-  if (!fotoUrl) {
+function getFotoUrl(fotoUrl, signedUrl = '') {
+  if (signedUrl) {
+    return signedUrl
+  }
+
+  if (!fotoUrl || !/^https?:\/\//i.test(fotoUrl)) {
     return ''
   }
 
-  if (/^https?:\/\//i.test(fotoUrl)) {
-    return fotoUrl
-  }
-
-  if (!storageBaseUrl) {
-    return fotoUrl
-  }
-
-  const cleanPath = String(fotoUrl).replace(/^\/+/, '')
-
-  if (cleanPath.startsWith('storage/v1/object/public/')) {
-    return `${storageBaseUrl}/${cleanPath}`
-  }
-
-  const bucketPrefix = `${storageBucket}/`
-  const objectPath = cleanPath.startsWith(bucketPrefix)
-    ? cleanPath.slice(bucketPrefix.length)
-    : cleanPath
-
-  return `${storageBaseUrl}/storage/v1/object/public/${storageBucket}/${objectPath}`
+  return fotoUrl
 }
 
 
@@ -275,11 +257,11 @@ const seccionesDetalle = computed(() => {
     title: section.title,
     fields: section.keys
       .filter((key) => tieneValor(row[key]))
-      .map((key) => ({ key, label: etiquetaCampo(key), value: row[key], image: key.toLowerCase().includes('foto') })),
+      .map((key) => ({ key, label: etiquetaCampo(key), value: row[key], signedUrl: getFotoSignedUrl(row, key), image: key.toLowerCase().includes('foto') })),
   }))
   const extras = Object.entries(row)
     .filter(([key, value]) => !usedKeys.has(key) && tieneValor(value))
-    .map(([key, value]) => ({ key, label: etiquetaCampo(key), value, image: key.toLowerCase().includes('foto') }))
+    .map(([key, value]) => ({ key, label: etiquetaCampo(key), value, signedUrl: getFotoSignedUrl(row, key), image: key.toLowerCase().includes('foto') }))
   sections.at(-1).fields.push(...extras)
   return sections.filter((section) => section.fields.length)
 })
@@ -287,6 +269,12 @@ const seccionesDetalle = computed(() => {
 function getClienteComercio(activacion) {
   return activacion.nombre_comercio ?? activacion.comercio ?? activacion.cliente ??
     ([activacion.nombres_cliente, activacion.apellidos_cliente].filter(Boolean).join(' ') || '-')
+}
+
+function getFotoSignedUrl(row, key) {
+  if (key === 'foto_url') return row.foto_url_signed ?? ''
+  if (key === 'foto_cash_in' || key === 'foto_cashin') return row.foto_cash_in_signed ?? ''
+  return ''
 }
 
 function getResultado(activacion) {
@@ -411,18 +399,14 @@ async function requestAdmin(path, options = {}) {
   return adminApiRequest({
     baseUrl: apiBaseUrl,
     path,
-    username: apiUser.value,
-    password: apiPass.value,
     token: session.value?.access_token,
     ...options,
   })
 }
 
 async function eliminarActivacion(activacion) {
-  if (!hasCredentials.value && !canEditActivaciones.value) {
-    notifyWarning(
-      'Conecta la API admin desde Usuarios, Notificaciones o Capacidad para eliminar activaciones.'
-    )
+  if (!canEditActivaciones.value) {
+    notifyWarning('Sesion administrativa requerida.')
     return
   }
 
@@ -531,8 +515,8 @@ const columnasExportacion = [
   ['Observaciones', (row) => row.observaciones],
   ['Es Plaza Temporal', (row) => row.es_plaza_temporal == null ? '' : row.es_plaza_temporal ? 'Si' : 'No'],
   ['Plaza Temporal', (row) => row.plaza_temporal],
-  ['Foto URL', (row) => getFotoPublicUrl(row.foto_url)],
-  ['Foto Cash-In', (row) => getFotoPublicUrl(row.foto_cash_in)],
+  ['Foto URL', (row) => getFotoUrl(row.foto_url, row.foto_url_signed)],
+  ['Foto Cash-In', (row) => getFotoUrl(row.foto_cash_in, row.foto_cash_in_signed)],
   ['Latitud', (row) => row.latitud],
   ['Longitud', (row) => row.longitud],
   ['Usuario ID', (row) => row.usuario_id],
@@ -565,8 +549,8 @@ const columnasExcelPersonalizado = [
   ['Cédula', (row) => row.ci_cliente],
   ['Teléfono', (row) => row.telefono_cliente],
   ['Correo', (row) => row.email_cliente],
-  ['Foto de la Activación', (row) => getFotoPublicUrl(row.foto_url)],
-  ['Foto Cash-In', (row) => getFotoPublicUrl(primerValor(row, ['foto_cash_in', 'foto_cashin']))],
+  ['Foto de la Activación', (row) => getFotoUrl(row.foto_url, row.foto_url_signed)],
+  ['Foto Cash-In', (row) => getFotoUrl(primerValor(row, ['foto_cash_in', 'foto_cashin']), row.foto_cash_in_signed)],
   ...checklistExcel,
   ['Tipo de Error', (row) => row.tipo_error],
   ['Descripción del Error', (row) => row.descripcion_error],
@@ -637,7 +621,7 @@ async function exportarAExcelConImagenes() {
         : `Excel exportado con ${rowCount} registros e imagenes.`
     )
   } catch (error) {
-    console.error('Error al exportar excel:', error)
+    logClientError('activaciones.export.excel-servidor', error)
     notifyError(getErrorMessage(error))
   } finally {
     exportandoExcel.value = false
@@ -671,7 +655,7 @@ async function descargarExcelPersonalizado() {
     worksheet.getRow(1).alignment = { vertical: 'middle', wrapText: true }
 
     datos.forEach((row) => {
-      worksheet.addRow(Object.fromEntries(columnasExcelPersonalizado.map(([header, getValue]) => [header, getValue(row) ?? ''])))
+      worksheet.addRow(neutralizeExportRow(Object.fromEntries(columnasExcelPersonalizado.map(([header, getValue]) => [header, getValue(row) ?? '']))))
     })
     worksheet.eachRow((row) => {
       row.eachCell((cell) => {
@@ -692,7 +676,7 @@ async function descargarExcelPersonalizado() {
     })
     notifySuccess(`Excel descargado con ${datos.length} registros filtrados.`)
   } catch (error) {
-    console.error('Error al descargar excel personalizado:', error)
+    logClientError('activaciones.export.excel-personalizado', error)
     notifyError(getErrorMessage(error))
   } finally {
     exportandoExcel.value = false
@@ -709,10 +693,6 @@ async function descargarExcelPersonalizado() {
         Filtra la base por rango de fechas, impulsador, plaza o distrito y exporta los resultados.
       </p>
     </div>
-    <p v-if="canAdminister && !hasCredentials" class="capacity-detail">
-      Eliminacion disponible cuando conectas la API admin en otro modulo.
-    </p>
-
     <div class="filtros filtros-grid filtros-activaciones">
       <label>
         <span class="field-label">Fecha desde</span>
@@ -799,7 +779,7 @@ async function descargarExcelPersonalizado() {
             <td>
               <div class="acciones">
                 <button class="boton boton-editar" @click.stop="abrirDetalle(activacion)">Ver detalle</button>
-                <button v-if="canAdminister" class="boton boton-eliminar" :disabled="(!hasCredentials && !canEditActivaciones) || deletingActivationId === activacion.id || !activacion.id" @click.stop="eliminarActivacion(activacion)">{{ deletingActivationId === activacion.id ? 'Eliminando...' : !activacion.id ? 'Sin ID' : 'Eliminar' }}</button>
+                <button v-if="canAdminister" class="boton boton-eliminar" :disabled="!canEditActivaciones || deletingActivationId === activacion.id || !activacion.id" @click.stop="eliminarActivacion(activacion)">{{ deletingActivationId === activacion.id ? 'Eliminando...' : !activacion.id ? 'Sin ID' : 'Eliminar' }}</button>
               </div>
             </td>
           </tr>
@@ -852,7 +832,8 @@ async function descargarExcelPersonalizado() {
                 <div v-for="field in section.fields" :key="field.key" class="detalle-field" :class="{ 'detalle-field-wide': field.image || typeof field.value === 'object' }">
                   <dt>{{ field.label }}</dt>
                   <dd v-if="field.image">
-                    <a :href="getFotoPublicUrl(field.value)" target="_blank" rel="noreferrer"><img :src="getFotoPublicUrl(field.value)" :alt="field.label" class="detalle-thumbnail"></a>
+                    <a v-if="getFotoUrl(field.value, field.signedUrl)" :href="getFotoUrl(field.value, field.signedUrl)" target="_blank" rel="noreferrer"><img :src="getFotoUrl(field.value, field.signedUrl)" :alt="field.label" class="detalle-thumbnail"></a>
+                    <span v-else>No disponible</span>
                   </dd>
                   <dd v-else-if="esUrl(field.value)"><a :href="field.value" target="_blank" rel="noreferrer" class="link-foto">Abrir enlace</a></dd>
                   <dd v-else>{{ formatearValor(field.value, field.key) }}</dd>

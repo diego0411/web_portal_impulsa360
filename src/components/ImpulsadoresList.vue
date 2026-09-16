@@ -6,6 +6,8 @@ import { AUTH_ENABLED } from '../lib/featureFlags'
 import { containsNormalized } from '../lib/textUtils'
 import { notifyError, notifyInfo, notifySuccess } from '../lib/feedback'
 import { deduplicarPlazas, mismaPlaza, nombreLegiblePlaza } from '../lib/plazas'
+import { neutralizeExportRow } from '../lib/exportSafety'
+import { logClientError } from '../lib/logging'
 
 const impulsadores = ref([])
 const loading = ref(true)
@@ -92,7 +94,7 @@ async function exportarImpulsadoresExcel() {
     worksheet.getRow(1).alignment = { vertical: 'middle' }
 
     datos.forEach((row, index) => {
-      worksheet.addRow(Object.fromEntries(columnasExcel.map(([header, getValue]) => [header, getValue(row, index) ?? ''])))
+      worksheet.addRow(neutralizeExportRow(Object.fromEntries(columnasExcel.map(([header, getValue]) => [header, getValue(row, index) ?? '']))))
     })
     worksheet.views = [{ state: 'frozen', ySplit: 1 }]
     worksheet.autoFilter = { from: 'A1', to: `${worksheet.getColumn(columnasExcel.length).letter}1` }
@@ -114,7 +116,7 @@ async function exportarImpulsadoresExcel() {
     })
     notifySuccess(`Excel exportado con ${datos.length} impulsadores.`)
   } catch (error) {
-    console.error('Error al exportar impulsadores:', error)
+    logClientError('impulsadores.export.excel', error)
     notifyError(error instanceof Error ? error.message : 'No se pudo exportar el Excel.')
   } finally {
     exportandoExcel.value = false
@@ -135,7 +137,7 @@ onMounted(async () => {
       impulsadores.value = data ?? []
     }
   } catch (error) {
-    console.error('Error al cargar impulsadores:', error)
+    logClientError('impulsadores.fetch', error)
     errorMsg.value = 'Error al obtener los impulsadores.'
   }
 

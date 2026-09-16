@@ -126,6 +126,11 @@ const DEFAULT_ALLOWED_ORIGINS = [
 
   */
 ]
+const ADMIN_RATE_LIMIT = Object.freeze({
+  windowMs: 60 * 1000,
+  maxRequests: 20,
+})
+const REQUEST_BODY_LIMIT = '1mb'
 const MB = 1024 * 1024
 const GB = 1024 * MB
 const SUPABASE_FREE_PLAN_REFERENCE = Object.freeze({
@@ -258,11 +263,93 @@ function isOriginAllowed(origin, req, allowedOriginMatchers) {
 }
 
 function jsonError(res, statusCode, message, details) {
-  const payload = { error: message }
   if (details) {
-    payload.details = details
+    console.error('[admin-api] Detalle interno:', sanitizeLogDetails(details))
+  }
+
+  const payload = { error: statusCode >= 500 ? 'Error interno del servidor.' : message }
+  if (statusCode >= 500) {
+    payload.requestId = crypto.randomUUID()
   }
   res.status(statusCode).json(payload)
+}
+
+function sanitizeLogDetails(details) {
+  if (!details) return null
+  if (typeof details === 'string') return { message: redactSensitiveLogText(details) }
+  if (details instanceof Error) {
+    return {
+      name: details.name,
+      message: typeof details.message === 'string' ? redactSensitiveLogText(details.message) : undefined,
+      code: details.code,
+      status: details.status,
+    }
+  }
+  if (typeof details === 'object') {
+    return {
+      name: details.name,
+      message: typeof details.message === 'string' ? redactSensitiveLogText(details.message) : undefined,
+      code: details.code,
+      status: details.status,
+    }
+  }
+  return { type: typeof details }
+}
+
+function redactSensitiveLogText(value) {
+  return String(value)
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/https?:\/\/\S+/gi, '[url]')
+    .replace(/\b\d{7,}\b/g, '[number]')
+    .slice(0, 240)
+}
+
+function applySecurityHeaders(req, res, next) {
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('X-Frame-Options', 'DENY')
+  res.setHeader('Referrer-Policy', 'no-referrer')
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+  res.setHeader('X-DNS-Prefetch-Control', 'off')
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+  res.setHeader(
+    'Content-Security-Policy',
+    [
+      "default-src 'self'",
+      "script-src 'self'",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "font-src 'self' https://fonts.gstatic.com data:",
+      "img-src 'self' data: blob: https://*.supabase.co https://*.tile.openstreetmap.org",
+      "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "frame-ancestors 'none'",
+    ].join('; ')
+  )
+
+  const forwardedProto = typeof req.headers['x-forwarded-proto'] === 'string'
+    ? req.headers['x-forwarded-proto'].split(',')[0].trim()
+    : ''
+  if (req.secure || forwardedProto === 'https') {
+    res.setHeader('Strict-Transport-Security', 'max-age=15552000; includeSubDomains')
+  }
+
+  next()
+}
+
+function handleBodyParseError(error, _req, res, next) {
+  if (!error) {
+    next()
+    return
+  }
+
+  const statusCode = error.type === 'entity.too.large' ? 413 : 400
+  jsonError(
+    res,
+    statusCode,
+    statusCode === 413 ? 'El cuerpo de la solicitud excede el limite permitido.' : 'Solicitud invalida.',
+    error.message
+  )
 }
 
 function timingSafeEqualText(left, right) {
@@ -306,6 +393,39 @@ function parseBasicAuth(header) {
     }
   } catch {
     return null
+  }
+}
+
+function createAdminRateLimiter({ windowMs, maxRequests }) {
+  const attempts = new Map()
+
+  return (req, res, next) => {
+    const now = Date.now()
+    const authorization = typeof req.headers.authorization === 'string' ? req.headers.authorization : ''
+    const parsed = parseBasicAuth(authorization)
+    const subject = parsed
+      ? `basic:${parsed.username}`
+      : authorization.startsWith('Bearer ')
+        ? 'bearer'
+        : 'anonymous'
+    const key = `${req.ip ?? 'unknown'}:${subject}`
+    const current = attempts.get(key)
+
+    if (!current || current.resetAt <= now) {
+      attempts.set(key, { count: 1, resetAt: now + windowMs })
+      next()
+      return
+    }
+
+    current.count += 1
+    if (current.count > maxRequests) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((current.resetAt - now) / 1000))
+      res.setHeader('Retry-After', String(retryAfterSeconds))
+      jsonError(res, 429, 'Demasiados intentos. Intenta nuevamente mas tarde.')
+      return
+    }
+
+    next()
   }
 }
 
@@ -411,6 +531,37 @@ function resolveStorageObjectPathFromFotoUrl(fotoUrl, bucketName) {
   }
 
   return decodeURIComponentSafe(path).replace(/^\/+/, '')
+}
+
+async function createActivationSignedPhotoMap(adminSupabase, bucketName, rows) {
+  const entries = [...new Set(
+    rows.flatMap((row) => [row.foto_url, row.foto_cash_in, row.foto_cashin]).filter(Boolean)
+  )].map((value) => [value, resolveStorageObjectPathFromFotoUrl(value, bucketName)])
+    .filter(([, path]) => path)
+  if (!entries.length) return new Map()
+
+  const signed = new Map()
+  for (let index = 0; index < entries.length; index += 100) {
+    const batch = entries.slice(index, index + 100)
+    const { data, error } = await adminSupabase.storage
+      .from(bucketName)
+      .createSignedUrls(batch.map(([, path]) => path), 60 * 60)
+    if (error) throw error
+    for (let itemIndex = 0; itemIndex < batch.length; itemIndex += 1) {
+      const signedUrl = data?.[itemIndex]?.signedUrl
+      if (signedUrl) signed.set(batch[itemIndex][0], signedUrl)
+    }
+  }
+  return signed
+}
+
+async function attachActivationSignedPhotos(adminSupabase, bucketName, rows) {
+  const signed = await createActivationSignedPhotoMap(adminSupabase, bucketName, rows)
+  return rows.map((row) => ({
+    ...row,
+    foto_url_signed: signed.get(row.foto_url) ?? null,
+    foto_cash_in_signed: signed.get(row.foto_cash_in) ?? signed.get(row.foto_cashin) ?? null,
+  }))
 }
 
 async function calculateBucketUsageBytes(adminSupabase, bucketName) {
@@ -912,6 +1063,8 @@ export function createAdminApiApp({ env = process.env } = {}) {
   const app = express()
   app.set('trust proxy', true)
 
+  app.use(applySecurityHeaders)
+
   app.use((req, res, next) => {
     const origin = typeof req.headers.origin === 'string' ? req.headers.origin : ''
 
@@ -936,7 +1089,9 @@ export function createAdminApiApp({ env = process.env } = {}) {
     next()
   })
 
-  app.use(express.json())
+  app.use(express.json({ limit: REQUEST_BODY_LIMIT }))
+  app.use(express.urlencoded({ extended: false, limit: REQUEST_BODY_LIMIT }))
+  app.use(handleBodyParseError)
 
   async function resolvePortalUser(req) {
     const authorization = typeof req.headers.authorization === 'string' ? req.headers.authorization : ''
@@ -960,11 +1115,6 @@ export function createAdminApiApp({ env = process.env } = {}) {
     if (!parsed) {
       const profile = await resolvePortalUser(req)
       if (profile?.rol === 'administrador') { req.portalUser = profile; next(); return }
-      if (profile?.rol === 'banco') {
-        if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) { req.portalUser = profile; next(); return }
-        jsonError(res, 403, 'El rol banco solo tiene permisos de lectura.')
-        return
-      }
       if (typeof req.headers.authorization === 'string' && req.headers.authorization.startsWith('Bearer ')) {
         jsonError(res, 403, 'Se requiere un administrador activo.')
         return
@@ -1028,7 +1178,11 @@ export function createAdminApiApp({ env = process.env } = {}) {
     }
     const { data, error } = await query.range(from, to)
     if (error) { jsonError(res, 500, 'No se pudo obtener activaciones.', error.message); return }
-    res.json({ activations: data ?? [] })
+    try {
+      res.json({ activations: await attachActivationSignedPhotos(adminSupabase, activacionesBucket, data ?? []) })
+    } catch (photoError) {
+      jsonError(res, 500, 'No se pudo preparar enlaces seguros de evidencias.', photoError?.message)
+    }
   }))
   app.get('/portal/activations/export-excel', asyncRoute(async (req, res) => {
     let allowedUserIds = null
@@ -1068,7 +1222,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
     res.send(Buffer.from(result.buffer))
   }))
 
-  app.use('/admin', requireAdminBasicAuth)
+  app.use('/admin', createAdminRateLimiter(ADMIN_RATE_LIMIT), requireAdminBasicAuth)
 
   app.get('/admin/healthz', (_req, res) => {
     res.json({ ok: true })
@@ -2047,7 +2201,6 @@ export function createAdminApiApp({ env = process.env } = {}) {
       console.info('[admin-api] Activacion editada', {
         activacionId,
         camposModificados: actualChangeKeys,
-        motivoEdicion: editReason,
         fecha: new Date().toISOString(),
       })
       res.json({ activation: updatedRow })
@@ -2634,7 +2787,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
   )
 
   app.use((error, _req, res, _next) => {
-    console.error('[admin-api] Error no controlado:', error)
+    console.error('[admin-api] Error no controlado:', sanitizeLogDetails(error))
 
     if (res.headersSent) {
       return

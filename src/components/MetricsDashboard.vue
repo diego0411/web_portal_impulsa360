@@ -3,6 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { fetchAllActivaciones } from '../lib/activacionesService'
 import MetricsHeatMap from './MetricsHeatMap.vue'
 import { deduplicarPlazas, mismaPlaza, nombreLegiblePlaza } from '../lib/plazas'
+import { neutralizeSpreadsheetFormula } from '../lib/exportSafety'
+import { logClientError } from '../lib/logging'
 
 const activaciones = ref([])
 const loading = ref(true)
@@ -29,7 +31,7 @@ onMounted(async () => {
   loading.value = true
   errorMsg.value = null
   try { activaciones.value = await fetchAllActivaciones() }
-  catch (error) { console.error('Error al cargar metricas:', error); errorMsg.value = 'No fue posible obtener las activaciones.' }
+  catch (error) { logClientError('metricas.fetch', error); errorMsg.value = 'No fue posible obtener las activaciones.' }
   finally { loading.value = false }
 })
 
@@ -215,7 +217,7 @@ function rankingAnterior() { rankingPage.value = Math.max(1, rankingSafePage.val
 function rankingSiguiente() { rankingPage.value = Math.min(rankingTotalPages.value, rankingSafePage.value + 1) }
 function exportarDashboard() {
   if (!dashboard.value.rows.length) return
-  const escape = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`
+  const escape = (value) => `"${String(neutralizeSpreadsheetFormula(value) ?? '').replace(/"/g, '""')}"`
   const data = dashboard.value.rows.map((item) => [fechaRegistro(item), texto(item.impulsador), plazaRegistro(item), texto(item.tipo_activacion), item.cash_in === true ? 'Si' : 'No', item.hubo_error === true ? 'Si' : 'No'].map(escape).join(','))
   const blob = new Blob([`\uFEFF${[['Fecha', 'Activador', 'Plaza', 'Tipo', 'Cash-In', 'Error'].map(escape).join(','), ...data].join('\n')}`], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url; link.download = 'dashboard-activaciones.csv'; link.click(); URL.revokeObjectURL(url)

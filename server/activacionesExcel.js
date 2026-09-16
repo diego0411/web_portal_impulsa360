@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs'
+import { neutralizeExportRow } from './exportSafety.js'
 
 const PAGE_SIZE = 1000
 const SIGNED_URL_BATCH_SIZE = 100
@@ -67,19 +68,8 @@ async function resolvePhotoLinks(adminSupabase, bucket, rows) {
   const values = [...new Set(rows.flatMap((row) => [row.foto_url, row.foto_cash_in]).filter(Boolean))]
   const pathsByValue = new Map(values.map((value) => [value, getObjectPath(bucket, value)]))
   if (!values.length) return new Map()
-  const { data: bucketData, error: bucketError } = await adminSupabase.storage.getBucket(bucket)
-  if (bucketError) throw bucketError
 
   const links = new Map()
-  if (bucketData.public) {
-    for (const [value, path] of pathsByValue) {
-      if (!path) continue
-      const { data } = adminSupabase.storage.from(bucket).getPublicUrl(path)
-      if (data?.publicUrl) links.set(value, data.publicUrl)
-    }
-    return links
-  }
-
   const entries = [...pathsByValue].filter(([, path]) => path)
   for (let index = 0; index < entries.length; index += SIGNED_URL_BATCH_SIZE) {
     const batch = entries.slice(index, index + SIGNED_URL_BATCH_SIZE)
@@ -133,7 +123,7 @@ export async function generateActivacionesExcel({ adminSupabase, bucket, filters
   versionCell.font = { bold: true, color: { argb: 'FF0563C1' } }
   versionCell.alignment = { horizontal: 'center' }
 
-  rows.forEach((row, index) => worksheet.addRow({
+  rows.forEach((row, index) => worksheet.addRow(neutralizeExportRow({
     numero: index + 1, creado: formatCreatedAt(row.created_at), fecha: row.fecha_activacion,
     impulsador: row.impulsador, plaza: getCiudad(row), distrito: row.zona_activacion,
     equipo: row.equipo_nombre_registro || (row.equipo_numero_registro ? `Equipo #${row.equipo_numero_registro}` : ''),
@@ -152,7 +142,7 @@ export async function generateActivacionesExcel({ adminSupabase, bucket, filters
     foto: photoHyperlink(photoLinks.get(row.foto_url)),
     fotoCashIn: photoHyperlink(photoLinks.get(row.foto_cash_in)),
     latitud: row.latitud, longitud: row.longitud, usuarioId: row.usuario_id,
-  }))
+  })))
 
   for (const key of ['foto', 'fotoCashIn']) {
     worksheet.getColumn(key).eachCell({ includeEmpty: false }, (cell, rowNumber) => {

@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import ActivacionesTable from '../components/ActivacionesTable.vue'
 import { fetchAllActivaciones } from '../lib/activacionesService'
+import { logClientError } from '../lib/logging'
 
 const activaciones = ref([])
 const loading = ref(true)
@@ -28,7 +29,7 @@ onMounted(async () => {
   try {
     activaciones.value = await fetchAllActivaciones()
   } catch (error) {
-    console.error('Error al obtener activaciones:', error)
+    logClientError('activaciones.fetch', error)
     errorMsg.value = 'Error al obtener activaciones.'
   } finally {
     loading.value = false

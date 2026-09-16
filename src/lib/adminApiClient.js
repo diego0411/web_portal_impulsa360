@@ -1,16 +1,3 @@
-function toBase64(value) {
-  try {
-    return btoa(value)
-  } catch {
-    const bytes = new TextEncoder().encode(value)
-    let binary = ''
-    for (const byte of bytes) {
-      binary += String.fromCharCode(byte)
-    }
-    return btoa(binary)
-  }
-}
-
 function parseErrorMessage(payload, status) {
   if (payload && typeof payload === 'object') {
     if (payload.error && payload.details) {
@@ -47,25 +34,20 @@ async function parseResponsePayload(response) {
 export async function adminApiRequest({
   baseUrl,
   path,
-  username,
-  password,
   token,
   method = 'GET',
   body,
   headers = {},
   signal,
 }) {
-  const safeUsername = typeof username === 'string' ? username.trim() : ''
-  const safePassword = typeof password === 'string' ? password : ''
-
   const safeToken = typeof token === 'string' ? token.trim() : ''
-  if (!safeToken && (!safeUsername || !safePassword)) {
+  if (!safeToken) {
     throw new Error('Sesion administrativa requerida.')
   }
 
   const normalizedBaseUrl = String(baseUrl || '').replace(/\/$/, '')
   const requestHeaders = {
-    Authorization: safeToken ? `Bearer ${safeToken}` : `Basic ${toBase64(`${safeUsername}:${safePassword}`)}`,
+    Authorization: `Bearer ${safeToken}`,
     ...headers,
   }
 
