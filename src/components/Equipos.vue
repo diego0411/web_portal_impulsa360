@@ -20,6 +20,7 @@ const lideres = computed(() => usuarios.value.filter((u) => rolesUsuario(u).incl
 const plazasCatalogo = computed(() => deduplicarPlazasCatalogo(catalogo.value.plazas))
 const usuariosPorId = computed(() => Object.fromEntries(usuarios.value.map((u) => [u.usuario_id, u])))
 const plazasPorId = computed(() => Object.fromEntries(plazasCatalogo.value.map((p) => [p.id, p])))
+const facturadoresPorId = computed(() => Object.fromEntries((catalogo.value.facturadores ?? []).map((f) => [f.id, f])))
 
 function request(path, options = {}) {
   return adminApiRequest({ baseUrl: apiBaseUrl, path, token: session.value?.access_token, ...options })
@@ -28,6 +29,7 @@ function errorMessage(error) { return error instanceof Error ? error.message : '
 function normalizarRol(value) { return String(value ?? '').trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase() }
 function rolesUsuario(usuario) { return Array.isArray(usuario?.roles) ? usuario.roles.map(normalizarRol) : [normalizarRol(usuario?.rol)] }
 function liderNombre(id) { return id ? (usuariosPorId.value[id]?.nombre ?? 'Lider no disponible') : 'Sin lider' }
+function facturadorNombre(id) { return id ? (facturadoresPorId.value[id]?.nombre ?? 'Facturador no disponible') : 'Sin facturador' }
 function numeroEquipoValido(value) { return Number.isSafeInteger(Number(value)) && Number(value) > 0 }
 function numeroDuplicado(value, exceptoId = null) {
   const numero = Number(value)
@@ -65,12 +67,18 @@ async function crear() {
 
 function editar(team) {
   editandoId.value = team.id
-  edicion.value = { numero: team.numero, nombre: team.nombre, lider_id: team.lider_actual_id ?? '', activo: team.activo }
+  edicion.value = {
+    numero: team.numero, nombre: team.nombre, plaza_id: team.plaza_id ?? '',
+    lider_id: team.lider_actual_id ?? '', facturador_id: team.facturador_id ?? '', activo: team.activo,
+  }
 }
 function cancelar() { editandoId.value = null; edicion.value = {} }
 async function guardar(team) {
   if (!numeroEquipoValido(edicion.value.numero)) {
     notifyWarning('Número de equipo es obligatorio.'); return
+  }
+  if (!edicion.value.plaza_id) {
+    notifyWarning('Plaza es obligatoria.'); return
   }
   if (numeroDuplicado(edicion.value.numero, team.id)) {
     notifyWarning('Ya existe un equipo con ese número.'); return
@@ -86,7 +94,8 @@ async function cambiarEstado(team) {
   procesando.value = true
   try {
     await request(`/admin/teams/${team.id}`, { method: 'PATCH', body: {
-      numero: team.numero, nombre: team.nombre, lider_id: team.lider_actual_id, activo: !team.activo,
+      numero: team.numero, nombre: team.nombre, plaza_id: team.plaza_id,
+      facturador_id: team.facturador_id ?? null, lider_id: team.lider_actual_id, activo: !team.activo,
     } })
     await cargar(); notifySuccess(team.activo ? 'Equipo desactivado.' : 'Equipo activado.')
   } catch (error) { notifyError(errorMessage(error)) }
@@ -129,16 +138,18 @@ onMounted(cargar)
     <p v-if="loading">Cargando equipos...</p>
     <div v-else-if="catalogo.available" class="panel-card tabla-contenedor">
       <div class="toolbar-line"><h2 class="subtitulo subtitulo-inline">Equipos registrados</h2><span class="meta-pill">{{ catalogo.equipos.length }}</span></div>
-      <div class="table-wrap modulo-table-wrap"><table><thead><tr><th>Número</th><th>Plaza</th><th>Líder actual</th><th>Integrantes</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>
+      <div class="table-wrap modulo-table-wrap"><table><thead><tr><th>Número</th><th>Plaza</th><th>Líder actual</th><th>Facturador</th><th>Integrantes</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>
         <tr v-for="team in catalogo.equipos" :key="team.id">
           <template v-if="editandoId === team.id">
-            <td><input v-model.number="edicion.numero" type="number" min="1" step="1" class="input-editar"></td><td>{{ plazasPorId[team.plaza_id]?.nombre ?? '-' }}</td>
+            <td><input v-model.number="edicion.numero" type="number" min="1" step="1" class="input-editar"></td>
+            <td><select v-model="edicion.plaza_id" class="input-editar"><option value="">Plaza</option><option v-for="item in plazasCatalogo" :key="item.id" :value="item.id">{{ item.nombre }}</option></select></td>
             <td><select v-model="edicion.lider_id" class="input-editar"><option value="">Sin lider</option><option v-for="item in lideres" :key="item.usuario_id" :value="item.usuario_id">{{ item.nombre }}</option></select></td>
+            <td><select v-model="edicion.facturador_id" class="input-editar"><option value="">Sin facturador</option><option v-for="item in catalogo.facturadores" :key="item.id" :value="item.id">{{ item.nombre }}</option></select></td>
             <td>{{ team.integrantes }}</td><td><select v-model="edicion.activo" class="input-editar"><option :value="true">Activo</option><option :value="false">Inactivo</option></select></td>
             <td><button class="boton boton-guardar" :disabled="procesando" @click="guardar(team)">Guardar</button><button class="boton boton-cancelar" @click="cancelar">Cancelar</button></td>
           </template>
           <template v-else>
-            <td>#{{ team.numero }}</td><td>{{ plazasPorId[team.plaza_id]?.nombre ?? '-' }}</td><td>{{ liderNombre(team.lider_actual_id) }}</td><td>{{ team.integrantes }}</td>
+            <td>#{{ team.numero }}</td><td>{{ plazasPorId[team.plaza_id]?.nombre ?? '-' }}</td><td>{{ liderNombre(team.lider_actual_id) }}</td><td>{{ facturadorNombre(team.facturador_id) }}</td><td>{{ team.integrantes }}</td>
             <td><span class="scope-pill" :class="team.activo ? 'scope-pill-all' : 'scope-pill-user'">{{ team.activo ? 'Activo' : 'Inactivo' }}</span></td>
             <td><button class="boton" @click="verDetalle(team)">Ver</button><button class="boton boton-editar" @click="editar(team)">Editar</button><button class="boton" :disabled="procesando" @click="cambiarEstado(team)">{{ team.activo ? 'Desactivar' : 'Activar' }}</button><button class="boton boton-eliminar" :disabled="procesando" @click="eliminarEquipo(team)">Eliminar</button></td>
           </template>
