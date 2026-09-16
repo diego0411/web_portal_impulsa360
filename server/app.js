@@ -1121,11 +1121,11 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
       if (esActivador) {
         const options = await loadOrganizationOptions()
-        if (options.available) {
+        if (options.available && requestedTeamId) {
           const selectedTeam = options.equipos.find((team) => team.id === requestedTeamId && team.activo)
           const selectedPlaza = options.plazas.find((item) => item.id === selectedTeam?.plaza_id)
           if (!selectedTeam || !selectedPlaza) {
-            jsonError(res, 400, 'La plaza base y un equipo activo son obligatorios para el activador.')
+            jsonError(res, 400, 'El equipo seleccionado debe estar activo y tener una plaza valida.')
             return
           }
           teamId = selectedTeam.id
@@ -1134,17 +1134,14 @@ export function createAdminApiApp({ env = process.env } = {}) {
           plaza = selectedPlaza.nombre
         }
       }
-      if (esActivador && !teamId) teamId = await resolveTeamIdForLeader(liderId, plaza)
+      if (esActivador && !teamId && req.body?.equipo_id === undefined) teamId = await resolveTeamIdForLeader(liderId, plaza)
 
       let leaderOrganizationAvailable = false
       if (esLider) {
         const options = await loadOrganizationOptions()
         leaderOrganizationAvailable = options.available
         if (options.available) {
-          if (!requestedBillerId || !requestedTeamIds.length) {
-            jsonError(res, 400, 'El facturador y al menos un equipo son obligatorios para un lider.')
-            return
-          }
+
           const selectedTeams = options.equipos.filter((team) => requestedTeamIds.includes(team.id))
           if (selectedTeams.length !== new Set(requestedTeamIds).size) {
             jsonError(res, 400, 'Uno o mas equipos seleccionados no existen o estan inactivos.')
@@ -1219,6 +1216,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
         inhabilitado_at: estado === 'inhabilitado' ? new Date().toISOString() : null,
         motivo_inhabilitacion: estado === 'inhabilitado' ? motivoInhabilitacion : null,
       }
+      if (esActivador && !teamId) insertedUser.organizacion_pendiente = true
       if (teamId) {
         insertedUser.equipo_id = teamId
         insertedUser.plaza_base = plaza
@@ -1704,11 +1702,11 @@ export function createAdminApiApp({ env = process.env } = {}) {
       let teamPlazaId = null
       if (esActivador) {
         const options = await loadOrganizationOptions()
-        if (options.available) {
+        if (options.available && requestedTeamId) {
           const selectedTeam = options.equipos.find((team) => team.id === requestedTeamId && team.activo)
           const selectedPlaza = options.plazas.find((item) => item.id === selectedTeam?.plaza_id)
           if (!selectedTeam || !selectedPlaza) {
-            jsonError(res, 400, 'La plaza base y un equipo activo son obligatorios para el activador.')
+            jsonError(res, 400, 'El equipo seleccionado debe estar activo y tener una plaza valida.')
             return
           }
           teamId = selectedTeam.id
@@ -1739,10 +1737,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
         leaderOrganizationAvailable = options.available
         if (options.available) {
           const effectiveTeamIds = esLider ? requestedTeamIds : []
-          if (esLider && (!requestedBillerId || !effectiveTeamIds.length)) {
-            jsonError(res, 400, 'El facturador y al menos un equipo son obligatorios para un lider.')
-            return
-          }
+
           const selectedTeams = options.equipos.filter((team) => effectiveTeamIds.includes(team.id))
           if (selectedTeams.length !== new Set(effectiveTeamIds).size ||
             (requestedBillerId && selectedTeams.some((team) => team.facturador_id !== requestedBillerId)) ||
@@ -1765,7 +1760,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
           : null,
         motivo_inhabilitacion: estado === 'inhabilitado' ? motivoInhabilitacion : null,
       }
-      if (esActivador && !teamId) teamId = await resolveTeamIdForLeader(liderId, plaza)
+      if (esActivador && !teamId && req.body?.equipo_id === undefined) teamId = await resolveTeamIdForLeader(liderId, plaza)
       if (teamId) {
         tableUpdatePayload.equipo_id = teamId
         tableUpdatePayload.plaza_base = plaza
@@ -1774,10 +1769,13 @@ export function createAdminApiApp({ env = process.env } = {}) {
           tableUpdatePayload.organizacion_pendiente = false
         }
       }
-      if (!esActivador && Object.prototype.hasOwnProperty.call(previousRow, 'equipo_id')) {
+      if (esActivador && !teamId && req.body?.equipo_id === undefined && previousRow.equipo_id) {
+        teamId = previousRow.equipo_id
+      }
+      if ((!esActivador || !teamId) && Object.prototype.hasOwnProperty.call(previousRow, 'equipo_id')) {
         tableUpdatePayload.equipo_id = null
         if (Object.prototype.hasOwnProperty.call(previousRow, 'plaza_id')) tableUpdatePayload.plaza_id = null
-        if (Object.prototype.hasOwnProperty.call(previousRow, 'organizacion_pendiente')) tableUpdatePayload.organizacion_pendiente = false
+        if (Object.prototype.hasOwnProperty.call(previousRow, 'organizacion_pendiente')) tableUpdatePayload.organizacion_pendiente = esActivador
       }
       if (shouldUpdateEmail) {
         tableUpdatePayload.email = email

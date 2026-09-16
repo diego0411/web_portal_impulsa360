@@ -116,8 +116,6 @@ function validarFormulario(form, esEdicion = false) {
   if (!isValidEmail(normalizeEmail(form.email))) return 'Ingresa un correo valido.'
   if (form.password && !/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{10,}$/.test(form.password)) return 'La contrasena debe tener al menos 10 caracteres, mayuscula, minuscula, numero y simbolo.'
   if (form.estado === 'inhabilitado' && !form.motivo_inhabilitacion?.trim()) return 'Ingresa el motivo de inhabilitacion.'
-  if (organizacion.value.available && esRol(form, 'activador') && (!form.plaza_id || !form.equipo_id)) return 'Selecciona la plaza base y el equipo del activador.'
-  if (organizacion.value.available && esRol(form, 'lider') && (!form.facturador_id || !form.equipo_ids?.length)) return 'Selecciona el facturador y al menos un equipo del lider.'
   if (organizacion.value.available && esRol(form, 'lider')) {
     const seleccionados = organizacion.value.equipos.filter((e) => form.equipo_ids?.includes(e.id))
     if (new Set(seleccionados.map((e) => e.plaza_id)).size !== seleccionados.length) return 'Un lider no puede tener dos equipos activos en la misma plaza.'
@@ -266,13 +264,13 @@ onMounted(cargarUsuarios)
           <template v-if="esRol(nuevo, 'activador')">
             <select v-if="organizacion.available" v-model="nuevo.plaza_id" class="input-texto" @change="ajustarPlaza(nuevo)"><option value="">Plaza base</option><option v-for="plaza in plazasCatalogo" :key="plaza.id" :value="plaza.id">{{ plaza.nombre }}</option></select>
             <input v-else v-model="nuevo.plaza" placeholder="Plaza base" class="input-texto">
-            <select v-if="organizacion.available" v-model="nuevo.equipo_id" class="input-texto"><option value="">Equipo</option><option v-for="equipo in equiposPara(nuevo, 'activador')" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select>
+            <select v-if="organizacion.available" v-model="nuevo.equipo_id" class="input-texto"><option value="">Sin equipo (asignar despues)</option><option v-for="equipo in equiposPara(nuevo, 'activador')" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select>
             <span v-if="organizacion.available" class="field-label">Lider: {{ liderDelEquipo(nuevo) }}</span>
             <select v-else v-model="nuevo.lider_id" class="input-texto"><option value="">Sin lider</option><option v-for="lider in lideresActivos" :key="lider.usuario_id" :value="lider.usuario_id">{{ lider.nombre }}</option></select>
           </template>
           <template v-if="esRol(nuevo, 'lider') && organizacion.available">
-            <select v-model="nuevo.facturador_id" class="input-texto"><option value="">Facturador</option><option v-for="item in organizacion.facturadores" :key="item.id" :value="item.id">{{ item.nombre }}</option></select>
-            <label><span class="field-label">Equipos por plaza</span><select v-model="nuevo.equipo_ids" class="input-texto" multiple><option v-for="equipo in equiposPara(nuevo, 'lider')" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select></label>
+            <select v-model="nuevo.facturador_id" class="input-texto"><option value="">Todos los facturadores (filtro opcional)</option><option v-for="item in organizacion.facturadores" :key="item.id" :value="item.id">{{ item.nombre }}</option></select>
+            <label><span class="field-label">Equipos por plaza (opcional)</span><select v-model="nuevo.equipo_ids" class="input-texto" multiple><option v-for="equipo in equiposPara(nuevo, 'lider')" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select></label>
             <label class="scope-pill"><input v-model="nuevo.puede_activar" type="checkbox"> Puede realizar activaciones</label>
           </template>
           <textarea v-if="nuevo.estado === 'inhabilitado'" v-model="nuevo.motivo_inhabilitacion" class="input-texto" placeholder="Motivo de inhabilitacion"></textarea>
@@ -316,13 +314,13 @@ onMounted(cargarUsuarios)
             </td>
             <td>
               <template v-if="esRol(edicion, 'activador')">
-                <select v-if="organizacion.available" v-model="edicion.equipo_id" class="input-editar"><option value="">Equipo</option><option v-for="equipo in equiposPara(edicion, 'activador')" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select>
+                <select v-if="organizacion.available" v-model="edicion.equipo_id" class="input-editar"><option value="">Sin equipo (asignar despues)</option><option v-for="equipo in equiposPara(edicion, 'activador')" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select>
                 <select v-else v-model="edicion.lider_id" class="input-editar"><option value="">Sin lider</option><option v-for="lider in lideresActivos" :key="lider.usuario_id" :value="lider.usuario_id">{{ lider.nombre }}</option></select>
               </template>
               <template v-if="esRol(edicion, 'lider') && organizacion.available"><select v-model="edicion.equipo_ids" class="input-editar" multiple><option v-for="equipo in equiposPara(edicion, 'lider')" :key="equipo.id" :value="equipo.id">{{ etiquetaEquipo(equipo) }}</option></select></template><span v-if="!esRol(edicion, 'activador') && !(esRol(edicion, 'lider') && organizacion.available)">-</span>
             </td>
             <td>{{ esRol(edicion, 'activador') ? liderDelEquipo(edicion) : '-' }}</td>
-            <td><select v-if="esRol(edicion, 'lider') && organizacion.available" v-model="edicion.facturador_id" class="input-editar"><option value="">Facturador</option><option v-for="item in organizacion.facturadores" :key="item.id" :value="item.id">{{ item.nombre }}</option></select><span v-else>{{ esRol(edicion, 'activador') ? (usuario.facturador_nombre || '-') : '-' }}</span></td>
+            <td><select v-if="esRol(edicion, 'lider') && organizacion.available" v-model="edicion.facturador_id" class="input-editar"><option value="">Todos los facturadores (filtro opcional)</option><option v-for="item in organizacion.facturadores" :key="item.id" :value="item.id">{{ item.nombre }}</option></select><span v-else>{{ esRol(edicion, 'activador') ? (usuario.facturador_nombre || '-') : '-' }}</span></td>
             <td><div role="group" aria-label="Roles" class="meta-row"><label v-for="rol in roles" :key="rol" class="scope-pill"><input v-model="edicion.roles" type="checkbox" :value="rol" @change="ajustarRol(edicion)"> {{ etiqueta(rol) }}</label></div></td>
             <td><label v-if="esRol(edicion, 'lider')" class="scope-pill"><input v-model="edicion.puede_activar" type="checkbox"> Sí</label><span v-else>-</span></td>
             <td><select v-model="edicion.estado" class="input-editar"><option v-for="estado in estados" :key="estado" :value="estado">{{ etiqueta(estado) }}</option></select><textarea v-if="edicion.estado === 'inhabilitado'" v-model="edicion.motivo_inhabilitacion" class="input-editar" placeholder="Motivo obligatorio"></textarea></td>

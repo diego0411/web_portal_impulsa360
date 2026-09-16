@@ -55,6 +55,58 @@ textarea {
   font: inherit;
 }
 
+input[type='checkbox'] {
+  appearance: none;
+  display: inline-grid;
+  place-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  flex-shrink: 0;
+  margin: 0;
+  vertical-align: middle;
+  border: 2px solid #17375a;
+  border-radius: 4px;
+  background: #17375a;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+input[type='checkbox']:checked {
+  background: #0f4ecc;
+  border-color: #0f4ecc;
+}
+
+input[type='checkbox']:checked::after {
+  content: '';
+  width: 0.3rem;
+  height: 0.55rem;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  transform: translateY(-1px) rotate(45deg);
+}
+
+input[type='checkbox']:focus-visible {
+  outline: 3px solid #0f4ecc;
+  outline-offset: 3px;
+}
+
+input[type='checkbox']:disabled {
+  cursor: not-allowed;
+  background: #4d6680;
+  border-color: #4d6680;
+  opacity: 1;
+}
+
+@media (forced-colors: active) {
+  input[type='checkbox'] {
+    appearance: auto;
+  }
+
+  input[type='checkbox']:checked::after {
+    content: none;
+  }
+}
+
 .app-shell {
   position: relative;
   min-height: 100vh;
@@ -396,6 +448,8 @@ textarea {
 }
 
 button {
+  background: #17375a;
+  color: #ffffff;
   border: 0;
   border-radius: 12px;
   cursor: pointer;
@@ -409,23 +463,26 @@ button {
   padding: 0.6rem 1rem;
   border-radius: 12px;
   border: 1px solid rgba(16, 42, 67, 0.08);
-  background: #e8f0fa;
-  color: #17375a;
+  background: #17375a;
+  color: #ffffff;
   font-size: 0.82rem;
   font-weight: 700;
   letter-spacing: 0.01em;
   transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
 }
 
-.boton:hover,
-.boton-exportar:hover {
+.boton:hover:not(:disabled),
+.boton-exportar:hover:not(:disabled) {
   transform: translateY(-1px);
   box-shadow: var(--shadow-soft);
 }
 
-.boton:disabled {
+button:disabled,
+.boton:disabled,
+.boton-exportar:disabled {
   cursor: not-allowed;
-  opacity: 0.62;
+  opacity: 1;
+  filter: grayscale(1);
   transform: none;
   box-shadow: none;
 }
@@ -438,23 +495,23 @@ button {
 }
 
 .boton-editar {
-  background: #fff3e1;
-  color: #7c4b00;
+  background: #7c4b00;
+  color: #ffffff;
 }
 
 .boton-eliminar {
-  background: #fde8ea;
-  color: #8b232d;
+  background: #8b232d;
+  color: #ffffff;
 }
 
 .boton-guardar {
-  background: #e6f7ef;
-  color: #0f6a44;
+  background: #0f6a44;
+  color: #ffffff;
 }
 
 .boton-cancelar {
-  background: #ebf1f7;
-  color: #4d6680;
+  background: #4d6680;
+  color: #ffffff;
 }
 
 .estado-etiqueta {
@@ -984,6 +1041,7 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 0.4rem;
   padding: 0.2rem 0.5rem;
   border-radius: 999px;
   font-size: 0.68rem;
@@ -1161,8 +1219,8 @@ button {
 
 .toast-close {
   border: 0;
-  background: transparent;
-  color: #4f6f8e;
+  background: #294e70;
+  color: #ffffff;
   font-size: 1.05rem;
   line-height: 1;
   padding: 0.08rem 0.16rem;
@@ -1519,8 +1577,8 @@ button {
   border-radius: 10px;
   width: 38px;
   height: 38px;
-  background: #ffffff;
-  color: #294e70;
+  background: #294e70;
+  color: #ffffff;
   font-size: 1.35rem;
   cursor: pointer;
 }
