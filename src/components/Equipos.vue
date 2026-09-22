@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { adminApiRequest } from '../lib/adminApiClient'
 import { useAuth } from '../lib/authStore'
-import { notifyError, notifySuccess, notifyWarning, requestConfirmation } from '../lib/feedback'
+import { notifyError, notifySuccess, notifyWarning, requestPasswordConfirmation } from '../lib/feedback'
 import { deduplicarPlazasCatalogo } from '../lib/plazas'
 
 const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(/\/$/, '')
@@ -109,11 +109,11 @@ async function verDetalle(team) {
 }
 
 async function eliminarEquipo(team) {
-  const ok = await requestConfirmation({ title: `Eliminar equipo #${team.numero}`, message: '¿Está seguro de que desea eliminar definitivamente este registro? Esta acción no se puede deshacer.', confirmLabel: 'Eliminar definitivamente', cancelLabel: 'Cancelar', tone: 'danger' })
-  if (!ok) return
+  const password = await requestPasswordConfirmation({ title: `Eliminar equipo #${team.numero}`, message: 'Ingresa tu contraseña actual para eliminar definitivamente este registro.', confirmLabel: 'Eliminar definitivamente' })
+  if (!password) return
   procesando.value = true
   try {
-    const result = await request(`/admin/teams/${team.id}`, { method: 'DELETE' })
+    const result = await request(`/admin/teams/${team.id}`, { method: 'DELETE', body: { password } })
     await cargar()
     notifySuccess(result.message ?? (result.deleted ? 'Equipo eliminado.' : 'Equipo inactivado.'))
   } catch (error) { notifyError(error?.status === 409 ? (error.message && !error.message.startsWith('Error HTTP') ? error.message : 'No se puede eliminar este registro porque tiene información relacionada. Puede deshabilitarlo para conservar el historial.') : errorMessage(error)) }

@@ -131,6 +131,12 @@ const ADMIN_RATE_LIMIT = Object.freeze({
   maxRequests: 20,
 })
 const REQUEST_BODY_LIMIT = '1mb'
+const ACTIVATION_PHOTO_MAX_BYTES = 10 * 1024 * 1024
+const ACTIVATION_PHOTO_TYPES = Object.freeze({
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+})
 const MB = 1024 * 1024
 const GB = 1024 * MB
 const SUPABASE_FREE_PLAN_REFERENCE = Object.freeze({
@@ -350,6 +356,35 @@ function handleBodyParseError(error, _req, res, next) {
     statusCode === 413 ? 'El cuerpo de la solicitud excede el limite permitido.' : 'Solicitud invalida.',
     error.message
   )
+}
+
+function parseActivationPhotoBody(req, res, next) {
+  express.raw({ type: () => true, limit: ACTIVATION_PHOTO_MAX_BYTES })(req, res, (error) => {
+    if (!error) {
+      next()
+      return
+    }
+    if (error?.type === 'entity.too.large') {
+      jsonError(res, 413, 'La foto excede el limite de 10 MB.')
+      return
+    }
+    jsonError(res, 400, 'No se pudo procesar la foto enviada.')
+  })
+}
+
+function isValidActivationPhotoBuffer(buffer, mimeType) {
+  if (!Buffer.isBuffer(buffer) || !buffer.length) return false
+  if (mimeType === 'image/jpeg') {
+    return buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff
+  }
+  if (mimeType === 'image/png') {
+    return buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  }
+  if (mimeType === 'image/webp') {
+    return buffer.length >= 12 && buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+  }
+  return false
 }
 
 function timingSafeEqualText(left, right) {
@@ -1184,7 +1219,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
     if (origin) {
       res.setHeader('Access-Control-Allow-Origin', origin)
       res.setHeader('Vary', 'Origin')
-      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS')
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization')
       res.setHeader('Access-Control-Expose-Headers', 'X-Export-Row-Count,X-Export-Images,X-Export-Version')
     }
@@ -1241,6 +1276,40 @@ export function createAdminApiApp({ env = process.env } = {}) {
     }
 
     req.adminUser = parsed.username
+    next()
+  }
+
+  async function requireAdminReauthentication(req, res, next) {
+    if (req.portalUser?.rol !== 'administrador') {
+      jsonError(res, 403, 'Se requiere un administrador autenticado por Bearer.')
+      return
+    }
+
+    const password = typeof req.body?.password === 'string' ? req.body.password : ''
+    if (req.body && typeof req.body === 'object') delete req.body.password
+    if (!password) {
+      jsonError(res, 400, 'La contraseña actual es obligatoria.')
+      return
+    }
+
+    const authEmail = normalizeEmail(req.portalUser.email)
+    if (!authEmail) {
+      jsonError(res, 401, 'No se pudo reautenticar al administrador.')
+      return
+    }
+
+    const verificationClient = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    })
+    const { data, error } = await verificationClient.auth.signInWithPassword({
+      email: authEmail,
+      password,
+    })
+    if (error || data.user?.id !== req.portalUser.usuario_id) {
+      jsonError(res, 401, 'Contraseña incorrecta.')
+      return
+    }
+
     next()
   }
 
@@ -1694,7 +1763,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
     res.json({ ok: true })
   }))
 
-  app.delete('/admin/plazas/:plazaId', asyncRoute(async (req, res) => {
+  app.delete('/admin/plazas/:plazaId', requireAdminReauthentication, asyncRoute(async (req, res) => {
     const plazaId = normalizeText(req.params.plazaId)
     if (!plazaId) { jsonError(res, 400, 'Parametro plazaId requerido.'); return }
 
@@ -1734,7 +1803,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
     }
   }))
 
-  app.post('/admin/plazas/:plazaId/reassign-delete', asyncRoute(async (req, res) => {
+  app.post('/admin/plazas/:plazaId/reassign-delete', requireAdminReauthentication, asyncRoute(async (req, res) => {
     const plazaId = normalizeText(req.params.plazaId)
     const destinoId = normalizeText(req.body?.destino_id)
     if (!plazaId || !destinoId || plazaId === destinoId) { jsonError(res, 400, 'Plaza de destino invalida.'); return }
@@ -1743,7 +1812,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
     res.json({ ok: true, deleted: true, reassigned: data, message: 'Relaciones operativas reasignadas y plaza eliminada.' })
   }))
 
-  app.delete('/admin/teams/:teamId', asyncRoute(async (req, res) => {
+  app.delete('/admin/teams/:teamId', requireAdminReauthentication, asyncRoute(async (req, res) => {
     const teamId = normalizeText(req.params.teamId)
     if (!teamId) { jsonError(res, 400, 'Parametro teamId requerido.'); return }
 
@@ -2242,6 +2311,112 @@ export function createAdminApiApp({ env = process.env } = {}) {
     })
   )
 
+  app.put(
+    '/admin/activaciones/:activacionId/fotos/:tipo',
+    parseActivationPhotoBody,
+    asyncRoute(async (req, res) => {
+      if (req.portalUser?.rol !== 'administrador') {
+        jsonError(res, 403, 'Se requiere un administrador autenticado.')
+        return
+      }
+
+      const activacionId = normalizeText(req.params?.activacionId)
+      const tipo = normalizeText(req.params?.tipo).toLowerCase()
+      const fieldByType = { principal: 'foto_url', 'cash-in': 'foto_cash_in' }
+      const photoField = fieldByType[tipo]
+      const mimeType = normalizeText(req.headers['content-type']).split(';')[0].toLowerCase()
+      const extension = ACTIVATION_PHOTO_TYPES[mimeType]
+
+      if (!activacionId) {
+        jsonError(res, 400, 'Parametro activacionId requerido.')
+        return
+      }
+      if (!photoField) {
+        jsonError(res, 400, 'Tipo de foto invalido.')
+        return
+      }
+      if (!extension || !isValidActivationPhotoBuffer(req.body, mimeType)) {
+        jsonError(res, 415, 'La foto debe ser JPEG, PNG o WebP valido.')
+        return
+      }
+      if (req.body.length > ACTIVATION_PHOTO_MAX_BYTES) {
+        jsonError(res, 413, 'La foto excede el limite de 10 MB.')
+        return
+      }
+
+      const { data: existingRow, error: existingError } = await adminSupabase
+        .from('activaciones')
+        .select('id,foto_url,foto_cash_in')
+        .eq('id', activacionId)
+        .maybeSingle()
+      if (existingError) {
+        jsonError(res, 500, 'No se pudo leer la activacion.', existingError)
+        return
+      }
+      if (!existingRow?.id) {
+        jsonError(res, 404, 'No se encontro la activacion indicada.')
+        return
+      }
+
+      const newObjectPath = `portal-reemplazos/${photoField}/${crypto.randomUUID()}.${extension}`
+      const { error: uploadError } = await adminSupabase.storage
+        .from(activacionesBucket)
+        .upload(newObjectPath, req.body, { contentType: mimeType, upsert: false })
+      if (uploadError) {
+        jsonError(res, 500, 'No se pudo guardar la nueva foto.', uploadError)
+        return
+      }
+
+      const { data: updatedRow, error: updateError } = await adminSupabase
+        .from('activaciones')
+        .update({ [photoField]: newObjectPath })
+        .eq('id', activacionId)
+        .select('*')
+        .maybeSingle()
+      if (updateError || !updatedRow?.id) {
+        const { error: cleanupError } = await adminSupabase.storage
+          .from(activacionesBucket)
+          .remove([newObjectPath])
+        if (cleanupError) console.error('[admin-api] No se pudo limpiar una foto nueva sin referencia.', sanitizeLogDetails(cleanupError))
+        jsonError(res, updateError ? 500 : 404, updateError ? 'No se pudo actualizar la activacion.' : 'No se encontro la activacion indicada.', updateError)
+        return
+      }
+
+      const previousObjectPath = resolveStorageObjectPathFromFotoUrl(
+        existingRow[photoField],
+        activacionesBucket
+      )
+      let warning = null
+      if (previousObjectPath && previousObjectPath !== newObjectPath) {
+        const { error: removePreviousError } = await adminSupabase.storage
+          .from(activacionesBucket)
+          .remove([previousObjectPath])
+        if (removePreviousError) {
+          warning = 'La foto fue reemplazada, pero no se pudo eliminar el archivo anterior.'
+          console.error('[admin-api] No se pudo eliminar una foto reemplazada.', sanitizeLogDetails(removePreviousError))
+        }
+      }
+
+      let activation
+      try {
+        const signedRows = await attachActivationSignedPhotos(adminSupabase, activacionesBucket, [updatedRow])
+        activation = signedRows[0]
+      } catch (signedUrlError) {
+        activation = {
+          ...updatedRow,
+          foto_url_signed: null,
+          foto_cash_in_signed: null,
+        }
+        warning = [warning, 'La foto fue reemplazada, pero su enlace seguro no esta disponible temporalmente.']
+          .filter(Boolean)
+          .join(' ')
+        console.error('[admin-api] No se pudo generar el enlace seguro de una foto reemplazada.', sanitizeLogDetails(signedUrlError))
+      }
+
+      res.json({ ok: true, activation, warning })
+    })
+  )
+
   app.patch(
     '/admin/activaciones/:activacionId',
     asyncRoute(async (req, res) => {
@@ -2369,6 +2544,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
   app.delete(
     '/admin/users/:userId',
+    requireAdminReauthentication,
     asyncRoute(async (req, res) => {
       const { userId } = req.params
 
@@ -2562,6 +2738,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
   app.delete(
     '/admin/activaciones/:activacionId',
+    requireAdminReauthentication,
     asyncRoute(async (req, res) => {
       const activacionId = normalizeText(req.params?.activacionId)
       if (!activacionId) {
@@ -2571,7 +2748,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
       const { data: existingRow, error: existingRowErr } = await adminSupabase
         .from('activaciones')
-        .select('id, foto_url')
+        .select('id, foto_url, foto_cash_in')
         .eq('id', activacionId)
         .maybeSingle()
 
@@ -2585,10 +2762,11 @@ export function createAdminApiApp({ env = process.env } = {}) {
         return
       }
 
-      const storageObjectPath = resolveStorageObjectPathFromFotoUrl(
-        existingRow.foto_url,
-        activacionesBucket
-      )
+      const storageObjectPaths = [...new Set(
+        [existingRow.foto_url, existingRow.foto_cash_in]
+          .map((value) => resolveStorageObjectPathFromFotoUrl(value, activacionesBucket))
+          .filter(Boolean)
+      )]
 
       const { data: deletedRows, error: deleteActivationErr } = await adminSupabase
         .from('activaciones')
@@ -2608,19 +2786,19 @@ export function createAdminApiApp({ env = process.env } = {}) {
       }
 
       const photoDelete = {
-        attempted: Boolean(storageObjectPath),
+        attempted: storageObjectPaths.length > 0,
         ok: true,
         bucket: activacionesBucket,
-        object_path: storageObjectPath ?? null,
-        message: storageObjectPath
-          ? 'Foto eliminada correctamente.'
-          : 'La activacion no tenia foto asociada.',
+        object_paths: storageObjectPaths,
+        message: storageObjectPaths.length
+          ? 'Fotos eliminadas correctamente.'
+          : 'La activacion no tenia fotos asociadas.',
       }
 
-      if (storageObjectPath) {
+      if (storageObjectPaths.length) {
         const { error: removePhotoErr } = await adminSupabase.storage
           .from(activacionesBucket)
-          .remove([storageObjectPath])
+          .remove(storageObjectPaths)
 
         if (removePhotoErr) {
           photoDelete.ok = false

@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { adminApiRequest } from '../lib/adminApiClient'
 import { useAuth } from '../lib/authStore'
-import { notifyError, notifySuccess, notifyWarning, requestConfirmation } from '../lib/feedback'
+import { notifyError, notifySuccess, notifyWarning, requestConfirmation, requestPasswordConfirmation } from '../lib/feedback'
 import { containsNormalized, isValidEmail, normalizeEmail } from '../lib/textUtils'
 import { deduplicarPlazas, deduplicarPlazasCatalogo, mismaPlaza } from '../lib/plazas'
 
@@ -190,10 +190,10 @@ async function activarUsuario(usuario) {
   finally { procesando.value = false }
 }
 async function eliminarUsuario(usuario) {
-  const ok = await requestConfirmation({ title: 'Eliminar usuario', message: '¿Está seguro de que desea eliminar definitivamente este registro? Esta acción no se puede deshacer.', confirmLabel: 'Eliminar definitivamente', cancelLabel: 'Cancelar', tone: 'danger' })
-  if (!ok) return
+  const password = await requestPasswordConfirmation({ title: 'Eliminar usuario', message: 'Ingresa tu contraseña actual para eliminar definitivamente este usuario.', confirmLabel: 'Eliminar definitivamente' })
+  if (!password) return
   procesando.value = true
-  try { const result = await requestAdmin(`/admin/users/${usuario.usuario_id}`, { method: 'DELETE' }); await cargarUsuarios(); notifySuccess(result.message ?? 'Usuario eliminado correctamente.') }
+  try { const result = await requestAdmin(`/admin/users/${usuario.usuario_id}`, { method: 'DELETE', body: { password } }); await cargarUsuarios(); notifySuccess(result.message ?? 'Usuario eliminado correctamente.') }
   catch (error) { notifyError(error?.status === 409 ? (error.message && !error.message.startsWith('Error HTTP') ? error.message : 'No se puede eliminar este registro porque tiene información relacionada. Puede deshabilitarlo para conservar el historial.') : getErrorMessage(error)) }
   finally { procesando.value = false }
 }

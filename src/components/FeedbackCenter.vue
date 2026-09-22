@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   dismissToast,
   settleConfirmation,
@@ -10,6 +10,8 @@ const { state } = useFeedback()
 
 const toasts = computed(() => state.toasts)
 const confirmDialog = computed(() => state.confirm)
+const confirmationPassword = ref('')
+const passwordInput = ref(null)
 const confirmButtonClass = computed(() => {
   return confirmDialog.value.tone === 'danger'
     ? 'boton boton-eliminar'
@@ -29,9 +31,26 @@ function getToastTitle(toast) {
 
 function onWindowKeydown(event) {
   if (event.key === 'Escape' && confirmDialog.value.isOpen) {
-    settleConfirmation(false)
+    settleDialog(false)
   }
 }
+
+function settleDialog(accepted) {
+  const password = confirmationPassword.value
+  confirmationPassword.value = ''
+  settleConfirmation(accepted, password)
+}
+
+watch(
+  () => [confirmDialog.value.isOpen, confirmDialog.value.requiresPassword],
+  async ([isOpen, requiresPassword]) => {
+    confirmationPassword.value = ''
+    if (isOpen && requiresPassword) {
+      await nextTick()
+      passwordInput.value?.focus()
+    }
+  }
+)
 
 onMounted(() => {
   window.addEventListener('keydown', onWindowKeydown)
@@ -72,7 +91,7 @@ onBeforeUnmount(() => {
       <div
         v-if="confirmDialog.isOpen"
         class="confirm-overlay"
-        @click.self="settleConfirmation(false)"
+        @click.self="settleDialog(false)"
       >
         <section
           class="confirm-modal"
@@ -84,12 +103,16 @@ onBeforeUnmount(() => {
           <p v-if="confirmDialog.message" class="confirm-message">
             {{ confirmDialog.message }}
           </p>
+          <label v-if="confirmDialog.requiresPassword">
+            <span class="field-label">Contraseña actual</span>
+            <input ref="passwordInput" v-model="confirmationPassword" type="password" class="input-texto" autocomplete="current-password" @keyup.enter="confirmationPassword && settleDialog(true)">
+          </label>
 
           <div class="confirm-actions">
-            <button type="button" class="boton boton-cancelar" @click="settleConfirmation(false)">
+            <button type="button" class="boton boton-cancelar" @click="settleDialog(false)">
               {{ confirmDialog.cancelLabel }}
             </button>
-            <button type="button" :class="confirmButtonClass" @click="settleConfirmation(true)">
+            <button type="button" :class="confirmButtonClass" :disabled="confirmDialog.requiresPassword && !confirmationPassword" @click="settleDialog(true)">
               {{ confirmDialog.confirmLabel }}
             </button>
           </div>

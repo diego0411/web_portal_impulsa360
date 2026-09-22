@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { adminApiRequest } from '../lib/adminApiClient'
 import { useAuth } from '../lib/authStore'
-import { notifyError, notifySuccess, notifyWarning, requestConfirmation } from '../lib/feedback'
+import { notifyError, notifySuccess, notifyWarning, requestPasswordConfirmation } from '../lib/feedback'
 
 const apiBaseUrl = (import.meta.env.VITE_ADMIN_API_URL ?? '/api').replace(/\/$/, '')
 const { session } = useAuth()
@@ -90,12 +90,12 @@ async function deshabilitarPlaza(plaza) {
 }
 
 async function eliminarPlaza(plaza) {
-  const confirm = await requestConfirmation({ title: 'Eliminar plaza', message: '¿Está seguro de que desea eliminar definitivamente este registro? Esta acción no se puede deshacer.', confirmLabel: 'Eliminar definitivamente', cancelLabel: 'Cancelar', tone: 'danger' })
-  if (!confirm) return
+  const password = await requestPasswordConfirmation({ title: 'Eliminar plaza', message: 'Ingresa tu contraseña actual para eliminar definitivamente esta plaza.', confirmLabel: 'Eliminar definitivamente' })
+  if (!password) return
   eliminandoId.value = plaza.id
   procesando.value = true
   try {
-    const result = await request(`/admin/plazas/${plaza.id}`, { method: 'DELETE' })
+    const result = await request(`/admin/plazas/${plaza.id}`, { method: 'DELETE', body: { password } })
     await cargar();
     notifySuccess(result.message ?? 'Operación realizada.')
   } catch (error) {
@@ -108,10 +108,10 @@ async function reasignarYEliminar() {
   const destino = plazas.value.find((item) => item.id === plazaDestino.value && item.activa && item.id !== plazaPendiente.value?.id)
   if (!destino) { notifyWarning('Selecciona una plaza activa de destino.'); return }
   modalReasignar.value = false
-  const ok = await requestConfirmation({ title: 'Reasignar y eliminar', message: 'Se reasignarán las relaciones operativas compatibles y se eliminará la plaza original. ¿Deseas continuar?', confirmLabel: 'Reasignar y eliminar', cancelLabel: 'Cancelar', tone: 'danger' })
-  if (!ok) { modalReasignar.value = true; return }
+  const password = await requestPasswordConfirmation({ title: 'Reasignar y eliminar', message: 'Ingresa tu contraseña actual. Se reasignarán las relaciones y se eliminará la plaza original.', confirmLabel: 'Reasignar y eliminar' })
+  if (!password) { modalReasignar.value = true; return }
   procesando.value = true
-  try { const result = await requestWithTimeout(`/admin/plazas/${plazaPendiente.value.id}/reassign-delete`, { method: 'POST', body: { destino_id: destino.id } }); plazaPendiente.value = null; await cargar(); notifySuccess(result.message ?? 'Plaza reasignada y eliminada.') }
+  try { const result = await requestWithTimeout(`/admin/plazas/${plazaPendiente.value.id}/reassign-delete`, { method: 'POST', body: { destino_id: destino.id, password } }); plazaPendiente.value = null; await cargar(); notifySuccess(result.message ?? 'Plaza reasignada y eliminada.') }
   catch (error) { notifyError(error?.name === 'AbortError' ? 'La operación tardó demasiado. Inténtalo nuevamente.' : (error?.status === 409 ? error.message : errorMessage(error))) }
   finally { procesando.value = false }
 }

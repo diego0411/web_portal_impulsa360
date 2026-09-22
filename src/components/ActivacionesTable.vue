@@ -6,7 +6,7 @@ import {
   notifyInfo,
   notifySuccess,
   notifyWarning,
-  requestConfirmation,
+  requestPasswordConfirmation,
 } from '../lib/feedback'
 import { isValidEmail, normalizeEmail, normalizeText } from '../lib/textUtils'
 import { useAuth } from '../lib/authStore'
@@ -29,6 +29,13 @@ const boliviaDateTimeFormatter = new Intl.DateTimeFormat('es-BO', {
   timeStyle: 'medium',
   timeZone: 'America/La_Paz',
 })
+const boliviaTimeFormatter = new Intl.DateTimeFormat('es-BO', {
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+  timeZone: 'America/La_Paz',
+})
 
 const filtroPlaza = ref('')
 const filtroDistrito = ref('')
@@ -40,6 +47,11 @@ const deletingActivationId = ref(null)
 const activacionSeleccionada = ref(null)
 const editandoActivacion = ref(false)
 const guardandoEdicion = ref(false)
+const reemplazandoFoto = ref('')
+const fotoPrincipalArchivo = ref(null)
+const fotoCashInArchivo = ref(null)
+const inputFotoPrincipal = ref(null)
+const inputFotoCashIn = ref(null)
 const formularioEdicion = ref({})
 const motivoEdicion = ref('')
 const { session, isAdmin } = useAuth()
@@ -160,6 +172,12 @@ function formatCreatedAtBolivia(value, { emptyValue = '-' } = {}) {
   }
 
   return boliviaDateTimeFormatter.format(date)
+}
+
+function formatHoraRegistro(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '-' : boliviaTimeFormatter.format(date)
 }
 
 function formatFechaLegible(value) {
@@ -283,10 +301,17 @@ function getResultado(activacion) {
 }
 
 function abrirDetalle(activacion) { activacionSeleccionada.value = activacion }
+function limpiarFotosSeleccionadas() {
+  fotoPrincipalArchivo.value = null
+  fotoCashInArchivo.value = null
+  if (inputFotoPrincipal.value) inputFotoPrincipal.value.value = ''
+  if (inputFotoCashIn.value) inputFotoCashIn.value.value = ''
+}
 function cerrarDetalle() {
-  if (guardandoEdicion.value) return
+  if (guardandoEdicion.value || reemplazandoFoto.value) return
   activacionSeleccionada.value = null
   editandoActivacion.value = false
+  limpiarFotosSeleccionadas()
 }
 
 function tieneCampo(row, key) {
@@ -326,14 +351,71 @@ function iniciarEdicion() {
     plaza_temporal: row.plaza_temporal ?? '',
   }
   motivoEdicion.value = ''
+  limpiarFotosSeleccionadas()
   editandoActivacion.value = true
 }
 
 function cancelarEdicion() {
-  if (guardandoEdicion.value) return
+  if (guardandoEdicion.value || reemplazandoFoto.value) return
   editandoActivacion.value = false
   formularioEdicion.value = {}
   motivoEdicion.value = ''
+  limpiarFotosSeleccionadas()
+}
+
+function seleccionarFoto(tipo, event) {
+  const file = event.target.files?.[0] ?? null
+  const target = tipo === 'principal' ? fotoPrincipalArchivo : fotoCashInArchivo
+  if (!file) { target.value = null; return }
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+    event.target.value = ''
+    target.value = null
+    notifyWarning('La foto debe ser JPEG, PNG o WebP.')
+    return
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    event.target.value = ''
+    target.value = null
+    notifyWarning('La foto no puede superar 10 MB.')
+    return
+  }
+  target.value = file
+}
+
+async function reemplazarFoto(tipo) {
+  if (!canEditActivaciones.value || !isAdmin.value) {
+    notifyWarning('Sesion administrativa requerida.')
+    return
+  }
+  const activationId = normalizeText(activacionSeleccionada.value?.id)
+  const file = tipo === 'principal' ? fotoPrincipalArchivo.value : fotoCashInArchivo.value
+  if (!activationId || !file) {
+    notifyWarning(!activationId ? 'La activacion no tiene ID.' : 'Selecciona una foto valida.')
+    return
+  }
+
+  reemplazandoFoto.value = tipo
+  try {
+    const response = await fetch(`${apiBaseUrl}/admin/activaciones/${encodeURIComponent(activationId)}/fotos/${tipo}`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${session.value.access_token}`,
+        'Content-Type': file.type,
+      },
+      body: file,
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok) throw new Error(payload?.error || `Error HTTP ${response.status}`)
+    activacionSeleccionada.value = payload.activation
+    emit('activacion-actualizada', { activation: payload.activation })
+    limpiarFotosSeleccionadas()
+    if (payload.warning) notifyWarning(payload.warning)
+    else notifySuccess(tipo === 'principal' ? 'Evidencia principal reemplazada.' : 'Evidencia Cash-In reemplazada.')
+  } catch (error) {
+    notifyError(getErrorMessage(error))
+  } finally {
+    reemplazandoFoto.value = ''
+  }
 }
 
 function validarEdicion() {
@@ -416,25 +498,23 @@ async function eliminarActivacion(activacion) {
     return
   }
 
-  const confirmacion = await requestConfirmation({
+  const password = await requestPasswordConfirmation({
     title: 'Eliminar activacion',
-    message: 'Se eliminara el registro y su foto asociada de forma permanente.',
-    confirmLabel: 'Eliminar',
-    cancelLabel: 'Cancelar',
-    tone: 'danger',
+    message: 'Ingresa tu contraseña actual para eliminar el registro y sus fotos de forma permanente.',
+    confirmLabel: 'Eliminar definitivamente',
   })
-  if (!confirmacion) {
-    return
-  }
+  if (!password) return
 
   deletingActivationId.value = activacionId
 
   try {
     const result = await requestAdmin(`/admin/activaciones/${encodeURIComponent(activacionId)}`, {
       method: 'DELETE',
+      body: { password },
     })
 
     emit('activacion-eliminada', { id: activacionId })
+    activacionSeleccionada.value = null
 
     if (result?.photoDelete?.ok === false) {
       notifyWarning(
@@ -760,6 +840,7 @@ async function descargarExcelPersonalizado() {
         <thead>
           <tr>
             <th>Fecha</th>
+            <th>Hora</th>
             <th>Activador o impulsador</th>
             <th>Cliente o comercio</th>
             <th>Tipo Activacion</th>
@@ -771,6 +852,7 @@ async function descargarExcelPersonalizado() {
         <tbody>
           <tr v-for="(activacion, index) in activacionesFiltradas" :key="getRowKey(activacion, index)" class="activacion-row" tabindex="0" @click="abrirDetalle(activacion)" @keydown.enter="abrirDetalle(activacion)">
             <td>{{ activacion.fecha_activacion || formatCreatedAtBolivia(activacion.created_at) }}</td>
+            <td>{{ formatHoraRegistro(activacion.created_at) }}</td>
             <td>{{ activacion.impulsador || '-' }}</td>
             <td>{{ getClienteComercio(activacion) }}</td>
             <td>{{ activacion.tipo_activacion || '-' }}</td>
@@ -779,7 +861,6 @@ async function descargarExcelPersonalizado() {
             <td>
               <div class="acciones">
                 <button class="boton boton-editar" @click.stop="abrirDetalle(activacion)">Ver detalle</button>
-                <button v-if="canAdminister" class="boton boton-eliminar" :disabled="!canEditActivaciones || deletingActivationId === activacion.id || !activacion.id" @click.stop="eliminarActivacion(activacion)">{{ deletingActivationId === activacion.id ? 'Eliminando...' : !activacion.id ? 'Sin ID' : 'Eliminar' }}</button>
               </div>
             </td>
           </tr>
@@ -796,7 +877,7 @@ async function descargarExcelPersonalizado() {
             <button type="button" class="detalle-close" aria-label="Cerrar detalle" @click="cerrarDetalle">×</button>
           </header>
           <form v-if="editandoActivacion" class="detalle-body" @submit.prevent="guardarEdicion">
-            <fieldset class="edicion-activacion" :disabled="guardandoEdicion">
+            <fieldset class="edicion-activacion" :disabled="guardandoEdicion || Boolean(reemplazandoFoto)">
               <label><span class="field-label">Nombre del cliente o comercio</span><input v-model="formularioEdicion.nombre" class="input-texto"></label>
               <label><span class="field-label">Telefono</span><input v-model="formularioEdicion.telefono_cliente" class="input-texto" inputmode="tel"></label>
               <label><span class="field-label">Correo</span><input v-model="formularioEdicion.email_cliente" type="email" class="input-texto"></label>
@@ -819,6 +900,8 @@ async function descargarExcelPersonalizado() {
               </template>
               <label><span class="field-label">Tipo de error</span><input v-model="formularioEdicion.tipo_error" class="input-texto"></label>
               <label class="edicion-field-wide"><span class="field-label">Descripcion del error</span><textarea v-model="formularioEdicion.descripcion_error" class="input-texto" rows="3"></textarea></label>
+              <label v-if="canAdminister"><span class="field-label">Evidencia principal</span><input ref="inputFotoPrincipal" type="file" accept="image/jpeg,image/png,image/webp" class="input-texto" @change="seleccionarFoto('principal', $event)"><button type="button" class="boton boton-editar" :disabled="!fotoPrincipalArchivo" @click="reemplazarFoto('principal')">{{ reemplazandoFoto === 'principal' ? 'Reemplazando...' : 'Reemplazar evidencia' }}</button></label>
+              <label v-if="canAdminister"><span class="field-label">Evidencia Cash-In</span><input ref="inputFotoCashIn" type="file" accept="image/jpeg,image/png,image/webp" class="input-texto" @change="seleccionarFoto('cash-in', $event)"><button type="button" class="boton boton-editar" :disabled="!fotoCashInArchivo" @click="reemplazarFoto('cash-in')">{{ reemplazandoFoto === 'cash-in' ? 'Reemplazando...' : 'Reemplazar Cash-In' }}</button></label>
               <label><span class="field-label">Es plaza temporal</span><select v-model="formularioEdicion.es_plaza_temporal" class="input-texto"><option :value="false">No</option><option :value="true">Si</option></select></label>
               <label v-if="formularioEdicion.es_plaza_temporal"><span class="field-label">Plaza temporal</span><input v-model="formularioEdicion.plaza_temporal" class="input-texto"></label>
               <label class="edicion-field-wide"><span class="field-label">Motivo de edicion</span><textarea v-model="motivoEdicion" class="input-texto" rows="3" placeholder="Obligatorio"></textarea></label>
@@ -840,6 +923,7 @@ async function descargarExcelPersonalizado() {
                 </div>
               </dl>
             </section>
+            <div v-if="canAdminister" class="confirm-actions"><button type="button" class="boton boton-eliminar" :disabled="!canEditActivaciones || deletingActivationId === activacionSeleccionada.id || !activacionSeleccionada.id" @click="eliminarActivacion(activacionSeleccionada)">{{ deletingActivationId === activacionSeleccionada.id ? 'Eliminando...' : 'Eliminar activacion' }}</button></div>
           </div>
         </aside>
       </div>

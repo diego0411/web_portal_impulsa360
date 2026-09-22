@@ -15,6 +15,7 @@ const feedbackState = reactive({
     confirmLabel: 'Confirmar',
     cancelLabel: 'Cancelar',
     tone: 'primary',
+    requiresPassword: false,
     resolver: null,
   },
 })
@@ -92,6 +93,7 @@ function resetConfirmationState() {
   feedbackState.confirm.confirmLabel = 'Confirmar'
   feedbackState.confirm.cancelLabel = 'Cancelar'
   feedbackState.confirm.tone = 'primary'
+  feedbackState.confirm.requiresPassword = false
   feedbackState.confirm.resolver = null
 }
 
@@ -113,16 +115,40 @@ export function requestConfirmation({
     feedbackState.confirm.confirmLabel = String(confirmLabel || '').trim() || 'Confirmar'
     feedbackState.confirm.cancelLabel = String(cancelLabel || '').trim() || 'Cancelar'
     feedbackState.confirm.tone = tone === 'danger' ? 'danger' : 'primary'
+    feedbackState.confirm.requiresPassword = false
     feedbackState.confirm.resolver = resolve
   })
 }
 
-export function settleConfirmation(accepted) {
+export function requestPasswordConfirmation({
+  title = 'Confirmar accion',
+  message = '',
+  confirmLabel = 'Confirmar',
+  cancelLabel = 'Cancelar',
+} = {}) {
+  if (typeof feedbackState.confirm.resolver === 'function') {
+    feedbackState.confirm.resolver(null)
+  }
+
+  return new Promise((resolve) => {
+    feedbackState.confirm.isOpen = true
+    feedbackState.confirm.title = String(title || '').trim() || 'Confirmar accion'
+    feedbackState.confirm.message = String(message || '').trim()
+    feedbackState.confirm.confirmLabel = String(confirmLabel || '').trim() || 'Confirmar'
+    feedbackState.confirm.cancelLabel = String(cancelLabel || '').trim() || 'Cancelar'
+    feedbackState.confirm.tone = 'danger'
+    feedbackState.confirm.requiresPassword = true
+    feedbackState.confirm.resolver = resolve
+  })
+}
+
+export function settleConfirmation(accepted, password = '') {
   const resolver = feedbackState.confirm.resolver
+  const requiresPassword = feedbackState.confirm.requiresPassword
   resetConfirmationState()
 
   if (typeof resolver === 'function') {
-    resolver(Boolean(accepted))
+    resolver(requiresPassword ? (accepted ? String(password) : null) : Boolean(accepted))
   }
 }
 
