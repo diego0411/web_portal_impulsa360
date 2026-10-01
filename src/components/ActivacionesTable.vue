@@ -145,6 +145,18 @@ function getFotoUrl(fotoUrl, signedUrl = '') {
   return fotoUrl
 }
 
+function fotoHyperlinkCell(fotoUrl, signedUrl = '') {
+  const url = getFotoUrl(fotoUrl, signedUrl)
+  return url ? { text: 'Ver foto', hyperlink: url } : ''
+}
+
+function getFechaExcelDate(row) {
+  const candidato = row?.created_at ?? row?.fecha_activacion ?? ''
+  if (!candidato) return ''
+  const fecha = candidato instanceof Date ? candidato : new Date(candidato)
+  return Number.isNaN(fecha.getTime()) ? '' : fecha
+}
+
 
 function getRowKey(activacion, index) {
   return (
@@ -246,7 +258,7 @@ function normalizarTipoValor(value) {
 }
 
 function tipoNormalizado(row) {
-  return `${normalizarTipoValor(row.tipo_activacion)} ${normalizarTipoValor(row.tipo_comercio)} ${normalizarTipoValor(row.tipo_tienda)}`
+  return `${normalizarTipoValor(row.tipo_activacion)} ${normalizarTipoValor(row.tipo_comercio)} ${normalizarTipoValor(row.tipo_tienda)} ${normalizarTipoValor(row.tamano_tienda)}`
 }
 
 function esTiendaBarrioRow(row) {
@@ -620,15 +632,22 @@ const checklistExcel = [
 ]
 
 const columnasExcelPersonalizado = [
-  ['Fecha de la Activación', (row) => formatFechaLegible(row.fecha_activacion || row.created_at)],
-  ['Ciudad', (row) => nombreLegiblePlaza(getCiudadActivacion(row))],
+  ['Fecha de la Activación', (row) => getFechaExcelDate(row)],
+  ['Ciudad', (row) => nombreLegiblePlaza(primerValor(row, ['plaza_efectiva_registro', 'ciudad_activacion', 'plaza']))],
   ['Zona de Activación', (row) => row.zona_activacion],
   ['Tipo de Activación', (row) => row.tipo_activacion],
   ['Tienda Barrio - Tamaño', (row) => esTiendaBarrioRow(row) ? primerValor(row, ['tamano_tienda', 'tipo_tienda']) : ''],
-  ['Tienda Barrio - Tipo de Activación', (row) => esTiendaBarrioRow(row) ? primerValor(row, ['tipo_activacion', 'tipo_comercio', 'tipo_tienda']) : ''],
+  ['Tienda Barrio - Tipo de Activación', (row) => esTiendaBarrioRow(row) ? primerValor(row, ['tipo_activacion', 'tipo_comercio']) : ''],
   ['Comercio - Tipo de Activación', (row) => esComercioRow(row) ? row.tipo_comercio : ''],
-  ['Comercio - Rubro', (row) => esComercioRow(row) ? [row.rubro_comercio, row.rubro_comercio_otro].filter(Boolean).join(' - ') : ''],
-  ['Comercio - Fuera del mercado', (row) => esComercioRow(row) ? valorBooleano(row.comercio_fuera_mercado) : ''],
+  ['Comercio - Rubro', (row) => {
+    const rubro = [row.rubro_comercio, row.rubro_comercio_otro].filter(Boolean).join(' - ')
+    if (esComercioRow(row)) return rubro
+    return rubro || ''
+  }],
+  ['Comercio - Fuera del mercado', (row) => {
+    if (esComercioRow(row)) return valorBooleano(row.comercio_fuera_mercado)
+    return row.comercio_fuera_mercado == null ? '' : valorBooleano(row.comercio_fuera_mercado)
+  }],
   ['Transeúnte - Tipo de Activación', (row) => esTranseunteRow(row) ? row.tipo_activacion : ''],
   ['Nombre del Activador', (row) => row.impulsador],
   ['Nombre', (row) => row.nombres_cliente],
@@ -636,9 +655,10 @@ const columnasExcelPersonalizado = [
   ['Cédula', (row) => row.ci_cliente],
   ['Teléfono', (row) => row.telefono_cliente],
   ['Correo', (row) => row.email_cliente],
-  ['Foto de la Activación', (row) => getFotoUrl(row.foto_url, row.foto_url_signed)],
-  ['Foto Cash-In', (row) => getFotoUrl(primerValor(row, ['foto_cash_in', 'foto_cashin']), row.foto_cash_in_signed)],
+  ['Foto de la Activación', (row) => fotoHyperlinkCell(row.foto_url, row.foto_url_signed)],
+  ['Foto Cash-In', (row) => fotoHyperlinkCell(primerValor(row, ['foto_cash_in', 'foto_cashin']), row.foto_cash_in_signed)],
   ...checklistExcel,
+  ['Hubo Error', (row) => valorBooleano(row.hubo_error)],
   ['Tipo de Error', (row) => row.tipo_error],
   ['Descripción del Error', (row) => row.descripcion_error],
 ]
@@ -744,6 +764,11 @@ async function descargarExcelPersonalizado() {
     datos.forEach((row) => {
       worksheet.addRow(neutralizeExportRow(Object.fromEntries(columnasExcelPersonalizado.map(([header, getValue]) => [header, getValue(row) ?? '']))))
     })
+    worksheet.getColumn('Fecha de la Activación').eachCell({ includeEmpty: false }, (cell, rowNumber) => {
+      if (rowNumber > 1 && cell.value instanceof Date) {
+        cell.numFmt = 'dd/mm/yyyy hh:mm'
+      }
+    })
     worksheet.eachRow((row) => {
       row.eachCell((cell) => {
         cell.alignment = { vertical: 'top', wrapText: true }
@@ -752,6 +777,9 @@ async function descargarExcelPersonalizado() {
           left: { style: 'thin', color: { argb: 'FFDCE8F4' } },
           bottom: { style: 'thin', color: { argb: 'FFDCE8F4' } },
           right: { style: 'thin', color: { argb: 'FFDCE8F4' } },
+        }
+        if (cell.value && typeof cell.value === 'object' && cell.value.hyperlink) {
+          cell.font = { color: { argb: 'FF0563C1' }, underline: true }
         }
       })
     })
