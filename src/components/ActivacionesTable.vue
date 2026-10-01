@@ -238,8 +238,15 @@ function primerValor(row, keys) {
   return ''
 }
 
+function normalizarTipoValor(value) {
+  return normalizeText(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[_-]+/g, ' ')
+}
+
 function tipoNormalizado(row) {
-  return `${normalizeText(row.tipo_activacion)} ${normalizeText(row.tipo_comercio)} ${normalizeText(row.tipo_tienda)}`
+  return `${normalizarTipoValor(row.tipo_activacion)} ${normalizarTipoValor(row.tipo_comercio)} ${normalizarTipoValor(row.tipo_tienda)}`
 }
 
 function esTiendaBarrioRow(row) {
@@ -618,7 +625,7 @@ const columnasExcelPersonalizado = [
   ['Zona de Activación', (row) => row.zona_activacion],
   ['Tipo de Activación', (row) => row.tipo_activacion],
   ['Tienda Barrio - Tamaño', (row) => esTiendaBarrioRow(row) ? primerValor(row, ['tamano_tienda', 'tipo_tienda']) : ''],
-  ['Tienda Barrio - Tipo de Activación', (row) => esTiendaBarrioRow(row) ? primerValor(row, ['tipo_tienda', 'tipo_comercio']) : ''],
+  ['Tienda Barrio - Tipo de Activación', (row) => esTiendaBarrioRow(row) ? primerValor(row, ['tipo_activacion', 'tipo_comercio', 'tipo_tienda']) : ''],
   ['Comercio - Tipo de Activación', (row) => esComercioRow(row) ? row.tipo_comercio : ''],
   ['Comercio - Rubro', (row) => esComercioRow(row) ? [row.rubro_comercio, row.rubro_comercio_otro].filter(Boolean).join(' - ') : ''],
   ['Comercio - Fuera del mercado', (row) => esComercioRow(row) ? valorBooleano(row.comercio_fuera_mercado) : ''],
