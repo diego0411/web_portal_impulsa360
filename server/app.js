@@ -1736,6 +1736,8 @@ export function createAdminApiApp({ env = process.env } = {}) {
     const teamId = normalizeText(req.params.teamId)
     const numero = Number(req.body?.numero)
     const nombre = normalizeText(req.body?.nombre)
+    const plazaId = normalizeNullableText(req.body?.plaza_id)
+    const facturadorId = normalizeNullableText(req.body?.facturador_id)
     const liderId = normalizeNullableText(req.body?.lider_id)
     const activo = req.body?.activo
     if (!teamId || !Number.isSafeInteger(numero) || numero <= 0 || !nombre || typeof activo !== 'boolean') {
@@ -1751,8 +1753,8 @@ export function createAdminApiApp({ env = process.env } = {}) {
     if (duplicateError) { jsonError(res, 500, 'No se pudo validar el numero de equipo.', duplicateError.message); return }
     if (duplicateTeam?.length) { jsonError(res, 409, 'Ya existe un equipo con ese numero.'); return }
     const { error } = await adminSupabase.rpc('actualizar_equipo_organizacion', {
-      p_equipo_id: teamId, p_numero: numero, p_nombre: nombre, p_facturador_id: null,
-      p_lider_id: liderId, p_activo: activo, p_inicio: new Date().toISOString(),
+      p_equipo_id: teamId, p_numero: numero, p_nombre: nombre, p_plaza_id: plazaId,
+      p_facturador_id: facturadorId, p_lider_id: liderId, p_activo: activo, p_inicio: new Date().toISOString(),
       p_motivo: 'Edicion administrativa de equipo',
     })
     if (error) {
