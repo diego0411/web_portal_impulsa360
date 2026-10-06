@@ -2,8 +2,6 @@ import ExcelJS from 'exceljs'
 import { neutralizeExportRow } from './exportSafety.js'
 
 const PAGE_SIZE = 1000
-const SIGNED_URL_BATCH_SIZE = 100
-const SIGNED_URL_EXPIRES_IN_SECONDS = 60 * 60
 const boliviaDateTimeFormatter = new Intl.DateTimeFormat('es-BO', {
   dateStyle: 'short',
   timeStyle: 'medium',
@@ -64,22 +62,21 @@ async function fetchActivaciones(adminSupabase, filters, allowedUserIds) {
   }
 }
 
-async function resolvePhotoLinks(adminSupabase, bucket, rows) {
-  const values = [...new Set(rows.flatMap((row) => [row.foto_url, row.foto_cash_in]).filter(Boolean))]
-  const pathsByValue = new Map(values.map((value) => [value, getObjectPath(bucket, value)]))
-  if (!values.length) return new Map()
-
+function resolveEvidenceLinks(rows, bucket, buildEvidenceUrl) {
   const links = new Map()
-  const entries = [...pathsByValue].filter(([, path]) => path)
-  for (let index = 0; index < entries.length; index += SIGNED_URL_BATCH_SIZE) {
-    const batch = entries.slice(index, index + SIGNED_URL_BATCH_SIZE)
-    const { data, error } = await adminSupabase.storage
-      .from(bucket)
-      .createSignedUrls(batch.map(([, path]) => path), SIGNED_URL_EXPIRES_IN_SECONDS)
-    if (error) throw error
-    for (let itemIndex = 0; itemIndex < batch.length; itemIndex += 1) {
-      const signedUrl = data?.[itemIndex]?.signedUrl
-      if (signedUrl) links.set(batch[itemIndex][0], signedUrl)
+  if (typeof buildEvidenceUrl !== 'function') return links
+
+  for (const row of rows) {
+    if (!row?.id) continue
+    const principalPath = getObjectPath(bucket, row.foto_url)
+    if (principalPath) {
+      const url = buildEvidenceUrl(row.id, 'principal', principalPath)
+      if (url) links.set(`${row.id}|principal`, url)
+    }
+    const cashInPath = getObjectPath(bucket, row.foto_cash_in)
+    if (cashInPath) {
+      const url = buildEvidenceUrl(row.id, 'cash-in', cashInPath)
+      if (url) links.set(`${row.id}|cash-in`, url)
     }
   }
   return links
@@ -89,9 +86,9 @@ function photoHyperlink(url) {
   return url ? { text: 'Ver imagen', hyperlink: url } : null
 }
 
-export async function generateActivacionesExcel({ adminSupabase, bucket, filters, allowedUserIds }) {
+export async function generateActivacionesExcel({ adminSupabase, bucket, filters, allowedUserIds, buildEvidenceUrl }) {
   const rows = await fetchActivaciones(adminSupabase, filters, allowedUserIds)
-  const photoLinks = await resolvePhotoLinks(adminSupabase, bucket, rows)
+  const evidenceLinks = resolveEvidenceLinks(rows, bucket, buildEvidenceUrl)
   const workbook = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet('Activaciones', { views: [{ state: 'frozen', ySplit: 2 }] })
   worksheet.columns = [
@@ -139,8 +136,8 @@ export async function generateActivacionesExcel({ adminSupabase, bucket, filters
     fueraMercado: yesNo(row.comercio_fuera_mercado), tipoError: row.tipo_error,
     observaciones: row.observaciones, esPlazaTemporal: yesNo(row.es_plaza_temporal),
     plazaTemporal: row.plaza_temporal,
-    foto: photoHyperlink(photoLinks.get(row.foto_url)),
-    fotoCashIn: photoHyperlink(photoLinks.get(row.foto_cash_in)),
+    foto: photoHyperlink(evidenceLinks.get(`${row.id}|principal`)),
+    fotoCashIn: photoHyperlink(evidenceLinks.get(`${row.id}|cash-in`)),
     latitud: row.latitud, longitud: row.longitud, usuarioId: row.usuario_id,
   })))
 

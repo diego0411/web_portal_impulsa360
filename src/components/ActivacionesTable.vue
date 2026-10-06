@@ -150,6 +150,21 @@ function fotoHyperlinkCell(fotoUrl, signedUrl = '') {
   return url ? { text: 'Ver foto', hyperlink: url } : ''
 }
 
+function absoluteEvidenceUrl(relativePath) {
+  if (!relativePath) {
+    return ''
+  }
+
+  const base = String(apiBaseUrl || '/api').replace(/\/$/, '')
+  const root = /^https?:\/\//i.test(base) ? base : `${window.location.origin}${base.startsWith('/') ? '' : '/'}${base}`
+  return `${root}${relativePath.startsWith('/') ? '' : '/'}${relativePath}`
+}
+
+function evidenciaHyperlinkCell(relativePath) {
+  const url = absoluteEvidenceUrl(relativePath)
+  return url ? { text: 'Ver foto', hyperlink: url } : ''
+}
+
 function getFechaExcelDate(row) {
   const candidato = row?.created_at ?? row?.fecha_activacion ?? ''
   if (!candidato) return ''
@@ -614,8 +629,8 @@ const columnasExportacion = [
   ['Observaciones', (row) => row.observaciones],
   ['Es Plaza Temporal', (row) => row.es_plaza_temporal == null ? '' : row.es_plaza_temporal ? 'Si' : 'No'],
   ['Plaza Temporal', (row) => row.plaza_temporal],
-  ['Foto URL', (row) => getFotoUrl(row.foto_url, row.foto_url_signed)],
-  ['Foto Cash-In', (row) => getFotoUrl(row.foto_cash_in, row.foto_cash_in_signed)],
+  ['Foto URL', (row) => absoluteEvidenceUrl(row.foto_url_evidencia)],
+  ['Foto Cash-In', (row) => absoluteEvidenceUrl(row.foto_cash_in_evidencia)],
   ['Latitud', (row) => row.latitud],
   ['Longitud', (row) => row.longitud],
   ['Usuario ID', (row) => row.usuario_id],
@@ -655,8 +670,8 @@ const columnasExcelPersonalizado = [
   ['Cédula', (row) => row.ci_cliente],
   ['Teléfono', (row) => row.telefono_cliente],
   ['Correo', (row) => row.email_cliente],
-  ['Foto de la Activación', (row) => fotoHyperlinkCell(row.foto_url, row.foto_url_signed)],
-  ['Foto Cash-In', (row) => fotoHyperlinkCell(primerValor(row, ['foto_cash_in', 'foto_cashin']), row.foto_cash_in_signed)],
+  ['Foto de la Activación', (row) => evidenciaHyperlinkCell(row.foto_url_evidencia)],
+  ['Foto Cash-In', (row) => evidenciaHyperlinkCell(row.foto_cash_in_evidencia)],
   ...checklistExcel,
   ['Hubo Error', (row) => valorBooleano(row.hubo_error)],
   ['Tipo de Error', (row) => row.tipo_error],

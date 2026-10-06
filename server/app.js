@@ -54,6 +54,7 @@ const REQUIRED_ENV = [
   'SUPABASE_SERVICE_ROLE_KEY',
   'ADMIN_BASIC_USER',
   'ADMIN_BASIC_PASS',
+  'EVIDENCE_LINK_SECRET',
 ]
 const DEFAULT_ALLOWED_ORIGINS = [
   'http://localhost:5173',
@@ -132,6 +133,55 @@ const ADMIN_RATE_LIMIT = Object.freeze({
 })
 const REQUEST_BODY_LIMIT = '1mb'
 const ACTIVATION_PHOTO_MAX_BYTES = 10 * 1024 * 1024
+const EVIDENCE_LINK_TYPES = Object.freeze({ principal: 'foto_url', 'cash-in': 'foto_cash_in' })
+const EVIDENCE_LINK_TOKEN_PATTERN = /^[0-9a-f]{64}$/
+const EVIDENCE_LINK_SIGNED_TTL_SECONDS = 300
+const EVIDENCE_LINK_RATE_LIMIT = Object.freeze({
+  windowMs: 60 * 1000,
+  maxRequests: 60,
+})
+
+export function buildEvidenceToken(secret, activacionId, tipo, objectPath) {
+  return crypto.createHmac('sha256', String(secret))
+    .update(`${activacionId}|${tipo}|${objectPath}`, 'utf8')
+    .digest('hex')
+}
+
+export function buildEvidencePath(activacionId, tipo, token) {
+  return `/evidencia/${activacionId}/${tipo}/${token}`
+}
+
+export function verifyEvidenceToken(secret, activacionId, tipo, objectPath, token) {
+  if (!EVIDENCE_LINK_TOKEN_PATTERN.test(String(token ?? ''))) {
+    return false
+  }
+
+  return timingSafeEqualText(String(token), buildEvidenceToken(secret, activacionId, tipo, objectPath))
+}
+
+function resolveEvidencePublicBaseUrl(rawValue) {
+  const normalized = normalizeText(rawValue).replace(/\/+$/, '')
+
+  if (!/^https?:\/\/[^/]+/i.test(normalized)) {
+    return null
+  }
+
+  if (normalized.toLowerCase().startsWith('http://')) {
+    let hostname = ''
+
+    try {
+      hostname = new URL(normalized).hostname.toLowerCase()
+    } catch {
+      return null
+    }
+
+    if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+      return null
+    }
+  }
+
+  return normalized
+}
 const ACTIVATION_PHOTO_TYPES = Object.freeze({
   'image/jpeg': 'jpg',
   'image/png': 'png',
@@ -590,13 +640,30 @@ async function createActivationSignedPhotoMap(adminSupabase, bucketName, rows) {
   return signed
 }
 
-async function attachActivationSignedPhotos(adminSupabase, bucketName, rows) {
+async function attachActivationSignedPhotos(adminSupabase, bucketName, rows, evidenceSecret = null) {
   const signed = await createActivationSignedPhotoMap(adminSupabase, bucketName, rows)
   return rows.map((row) => ({
     ...row,
     foto_url_signed: signed.get(row.foto_url) ?? null,
     foto_cash_in_signed: signed.get(row.foto_cash_in) ?? signed.get(row.foto_cashin) ?? null,
+    foto_url_evidencia: buildEvidenceLinkPath(evidenceSecret, row, 'principal', bucketName),
+    foto_cash_in_evidencia: buildEvidenceLinkPath(evidenceSecret, row, 'cash-in', bucketName),
   }))
+}
+
+function buildEvidenceLinkPath(secret, row, tipo, bucketName) {
+  if (!secret || !row?.id) {
+    return null
+  }
+
+  const storedValue = tipo === 'principal' ? row.foto_url : (row.foto_cash_in ?? row.foto_cashin)
+  const objectPath = resolveStorageObjectPathFromFotoUrl(storedValue, bucketName)
+
+  if (!objectPath) {
+    return null
+  }
+
+  return buildEvidencePath(row.id, tipo, buildEvidenceToken(secret, row.id, tipo, objectPath))
 }
 
 async function calculateBucketUsageBytes(adminSupabase, bucketName) {
@@ -1317,6 +1384,52 @@ export function createAdminApiApp({ env = process.env } = {}) {
     res.json({ ok: true })
   })
 
+  app.get('/evidencia/:activacionId/:tipo/:token', createAdminRateLimiter(EVIDENCE_LINK_RATE_LIMIT), asyncRoute(async (req, res) => {
+    const activacionId = normalizeText(req.params.activacionId)
+    const tipo = normalizeText(req.params.tipo)
+    const token = normalizeText(req.params.token)
+    const column = EVIDENCE_LINK_TYPES[tipo]
+
+    if (!activacionId || !column || !EVIDENCE_LINK_TOKEN_PATTERN.test(token)) {
+      jsonError(res, 404, 'No encontrado.')
+      return
+    }
+
+    const { data: row, error } = await adminSupabase.from('activaciones')
+      .select('id,foto_url,foto_cash_in')
+      .eq('id', activacionId)
+      .maybeSingle()
+
+    if (error || !row) {
+      jsonError(res, 404, 'No encontrado.')
+      return
+    }
+
+    const storedValue = tipo === 'principal' ? row.foto_url : (row.foto_cash_in ?? row.foto_cashin)
+    const objectPath = resolveStorageObjectPathFromFotoUrl(storedValue, activacionesBucket)
+
+    if (!objectPath || !verifyEvidenceToken(env.EVIDENCE_LINK_SECRET, activacionId, tipo, objectPath, token)) {
+      jsonError(res, 404, 'No encontrado.')
+      return
+    }
+
+    const { data: signedData, error: signError } = await adminSupabase.storage
+      .from(activacionesBucket)
+      .createSignedUrls([objectPath], EVIDENCE_LINK_SIGNED_TTL_SECONDS)
+    const signedUrl = signedData?.[0]?.signedUrl
+
+    if (signError || !signedUrl) {
+      console.error('[admin-api] No se pudo firmar una evidencia.', sanitizeLogDetails(signError))
+      jsonError(res, 500, 'No se pudo resolver la evidencia.')
+      return
+    }
+
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0')
+    res.setHeader('CDN-Cache-Control', 'no-store')
+    res.setHeader('Vercel-CDN-Cache-Control', 'no-store')
+    res.redirect(302, signedUrl)
+  }))
+
   app.use('/portal', requirePortalAuth)
   app.get('/portal/me', asyncRoute(async (req, res) => {
     const [profile] = await attachUserRoles([req.portalUser])
@@ -1356,7 +1469,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
     const { data, error } = await query.range(from, to)
     if (error) { jsonError(res, 500, 'No se pudo obtener activaciones.', error.message); return }
     try {
-      res.json({ activations: await attachActivationSignedPhotos(adminSupabase, activacionesBucket, data ?? []) })
+      res.json({ activations: await attachActivationSignedPhotos(adminSupabase, activacionesBucket, data ?? [], env.EVIDENCE_LINK_SECRET) })
     } catch (photoError) {
       jsonError(res, 500, 'No se pudo preparar enlaces seguros de evidencias.', photoError?.message)
     }
@@ -1382,11 +1495,21 @@ export function createAdminApiApp({ env = process.env } = {}) {
       fechaDesde: normalizeText(req.query.fechaDesde),
       fechaHasta: normalizeText(req.query.fechaHasta),
     }
+    const evidenceBaseUrl = resolveEvidencePublicBaseUrl(env.EVIDENCE_PUBLIC_BASE_URL)
+    if (!evidenceBaseUrl) {
+      jsonError(res, 500, 'Enlaces de evidencia no configurados.')
+      return
+    }
     const result = await generateActivacionesExcel({
       adminSupabase,
       bucket: activacionesBucket,
       filters,
       allowedUserIds,
+      buildEvidenceUrl: (activacionId, tipo, objectPath) => `${evidenceBaseUrl}${buildEvidencePath(
+        activacionId,
+        tipo,
+        buildEvidenceToken(env.EVIDENCE_LINK_SECRET, activacionId, tipo, objectPath),
+      )}`,
     })
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', 'attachment; filename="activaciones.xlsx"')
