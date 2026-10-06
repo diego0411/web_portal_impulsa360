@@ -1308,7 +1308,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
     if (!authorization.startsWith('Bearer ')) return null
     const { data: authData, error: authError } = await adminSupabase.auth.getUser(authorization.slice(7))
     if (authError || !authData.user) return null
-    const { data: profile } = await adminSupabase.from('activadores').select('usuario_id,nombre,email,rol,estado,lider_id,puede_activar').eq('usuario_id', authData.user.id).maybeSingle()
+    const { data: profile } = await adminSupabase.from('activadores').select('usuario_id,auth_user_id,nombre,email,rol,estado,lider_id,puede_activar').eq('auth_user_id', authData.user.id).maybeSingle()
     if (!profile || profile.estado !== 'activo' || !['administrador', 'lider', 'banco'].includes(profile.rol)) return null
     return profile
   }
@@ -1372,7 +1372,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       email: authEmail,
       password,
     })
-    if (error || data.user?.id !== req.portalUser.usuario_id) {
+    if (error || data.user?.id !== req.portalUser.auth_user_id) {
       jsonError(res, 401, 'Contraseña incorrecta.')
       return
     }
@@ -1430,10 +1430,15 @@ export function createAdminApiApp({ env = process.env } = {}) {
     res.redirect(302, signedUrl)
   }))
 
+  function withAccessFlag(users) {
+    return (users ?? []).map(({ auth_user_id, ...rest }) => ({ ...rest, cuenta_acceso_eliminada: auth_user_id == null }))
+  }
+
   app.use('/portal', requirePortalAuth)
   app.get('/portal/me', asyncRoute(async (req, res) => {
     const [profile] = await attachUserRoles([req.portalUser])
-    res.json({ profile })
+    const { auth_user_id, ...safeProfile } = profile ?? {}
+    res.json({ profile: safeProfile })
   }))
   app.get('/portal/users', asyncRoute(async (req, res) => {
     let query = adminSupabase.from('activadores').select('*').order('nombre')
@@ -1453,7 +1458,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       leaderNames = new Map((leaders ?? []).map((leader) => [leader.usuario_id, leader.nombre]))
     }
     const resolvedUsers = users.map((item) => ({ ...item, lider_nombre: leaderNames.get(item.lider_id) ?? null }))
-    res.json({ users: await attachUserRoles(await enrichUsersWithOrganization(resolvedUsers)) })
+    res.json({ users: withAccessFlag(await attachUserRoles(await enrichUsersWithOrganization(resolvedUsers))) })
   }))
   app.get('/portal/activations', asyncRoute(async (req, res) => {
     const from = Math.max(0, Number.parseInt(String(req.query.from ?? '0'), 10) || 0)
@@ -1541,7 +1546,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
         return
       }
 
-      res.json({ users: await attachUserRoles(await enrichUsersWithOrganization(data ?? [])) })
+      res.json({ users: withAccessFlag(await attachUserRoles(await enrichUsersWithOrganization(data ?? []))) })
     })
   )
 
@@ -1666,6 +1671,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
       const insertedUser = {
         usuario_id: created.user.id,
+        auth_user_id: created.user.id,
         email,
         nombre,
         plaza,
@@ -1757,13 +1763,24 @@ export function createAdminApiApp({ env = process.env } = {}) {
         return
       }
 
-      const { data: existingAuthUser, error: getUserError } = await adminSupabase.auth.admin.getUserById(userId)
+      const { data: targetProfile, error: targetProfileError } = await adminSupabase.from('activadores')
+        .select('usuario_id,auth_user_id').eq('usuario_id', userId).maybeSingle()
+      if (targetProfileError || !targetProfile) {
+        jsonError(res, 404, 'No se encontro el usuario solicitado.')
+        return
+      }
+      if (!targetProfile.auth_user_id) {
+        jsonError(res, 409, 'El perfil no tiene cuenta de acceso para restablecer.')
+        return
+      }
+
+      const { data: existingAuthUser, error: getUserError } = await adminSupabase.auth.admin.getUserById(targetProfile.auth_user_id)
       if (getUserError || !existingAuthUser?.user) {
         jsonError(res, 404, 'No se encontro el usuario solicitado.')
         return
       }
 
-      const { error: updatePasswordError } = await adminSupabase.auth.admin.updateUserById(userId, { password })
+      const { error: updatePasswordError } = await adminSupabase.auth.admin.updateUserById(targetProfile.auth_user_id, { password })
       if (updatePasswordError) {
         jsonError(res, 500, 'No se pudo restablecer la contrasena.')
         return
@@ -2348,9 +2365,18 @@ export function createAdminApiApp({ env = process.env } = {}) {
       }
 
       let updateAuthErr
+      const authIdForUpdate = previousRow.auth_user_id ?? null
+      if (!authIdForUpdate && (password || emailChanged)) {
+        jsonError(res, 409, 'El perfil no tiene cuenta de acceso para actualizar credenciales.')
+        return
+      }
       try {
-        const result = await adminSupabase.auth.admin.updateUserById(userId, authUpdatePayload)
-        updateAuthErr = result.error
+        if (!authIdForUpdate) {
+          updateAuthErr = null
+        } else {
+          const result = await adminSupabase.auth.admin.updateUserById(authIdForUpdate, authUpdatePayload)
+          updateAuthErr = result.error
+        }
       } catch (error) { updateAuthErr = error }
 
       if (updateAuthErr) {
@@ -2675,7 +2701,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
       const { data: existingRow, error: existingErr } = await adminSupabase
         .from('activadores')
-        .select('usuario_id, email, nombre, plaza')
+        .select('usuario_id, auth_user_id, email, nombre, estado, motivo_inhabilitacion')
         .eq('usuario_id', userId)
         .maybeSingle()
 
@@ -2684,29 +2710,46 @@ export function createAdminApiApp({ env = process.env } = {}) {
         return
       }
       if (!existingRow) { jsonError(res, 404, 'No se encontro el usuario en activadores.'); return }
-      const checks = await Promise.all([
-        adminSupabase.from('activaciones').select('id', { count: 'exact', head: true }).eq('usuario_id', userId),
-        adminSupabase.from('activadores').select('usuario_id', { count: 'exact', head: true }).eq('lider_id', userId),
-        adminSupabase.from('activador_plaza_temporal').select('id', { count: 'exact', head: true }).eq('activador_id', userId),
-        adminSupabase.from('equipos').select('id', { count: 'exact', head: true }).eq('lider_actual_id', userId),
-      ])
-      const failedCheck = checks.find((item) => item.error)
-      if (failedCheck) { jsonError(res, 500, 'No se pudo verificar relaciones del usuario.', failedCheck.error.message); return }
-      if (checks.some((item) => (item.count ?? 0) > 0)) { res.status(409).json({ ok: false, deleted: false, message: 'No se puede eliminar el usuario porque tiene información relacionada. Debe deshabilitarse.' }); return }
-
-      const { data: deletedRows, error: deleteTableErr } = await adminSupabase
-        .from('activadores')
-        .delete()
-        .eq('usuario_id', userId)
-        .select('usuario_id')
-
-      if (deleteTableErr) {
-        jsonError(res, deleteTableErr.code === '23503' ? 409 : 500, deleteTableErr.code === '23503' ? 'No se puede eliminar el usuario porque tiene información relacionada. Debe deshabilitarse.' : deleteTableErr.message)
+      if ((existingRow.estado ?? 'activo') !== 'inhabilitado') {
+        res.status(409).json({ ok: false, deleted: false, message: 'El usuario esta activo. Debe inhabilitarse antes de eliminar su cuenta de acceso.' })
         return
       }
 
-      const tableRecordDeleted = Array.isArray(deletedRows) && deletedRows.length > 0
-      res.json({ ok: true, deleted: tableRecordDeleted, tableRecordDeleted, message: 'Usuario eliminado del portal. La cuenta de Supabase Auth se conserva.' })
+      const now = new Date().toISOString()
+      const checks = await Promise.all([
+        adminSupabase.from('activadores').select('usuario_id', { count: 'exact', head: true }).eq('lider_id', userId),
+        adminSupabase.from('equipos').select('id', { count: 'exact', head: true }).eq('lider_actual_id', userId),
+        adminSupabase.from('activador_plaza_temporal').select('id', { count: 'exact', head: true }).eq('activador_id', userId).lte('inicio', now).gte('fin', now).eq('activo', true).is('cancelado_at', null),
+      ])
+      const failedCheck = checks.find((item) => item.error)
+      if (failedCheck) { jsonError(res, 500, 'No se pudo verificar relaciones activas del usuario.', failedCheck.error.message); return }
+      const [lideradosCount, equiposLideradosCount, plazasVigentesCount] = checks.map((item) => item.count ?? 0)
+      if (lideradosCount > 0) { res.status(409).json({ ok: false, deleted: false, message: 'No se puede eliminar la cuenta porque el usuario tiene activadores a su cargo. Reasignelos antes de continuar.' }); return }
+      if (equiposLideradosCount > 0) { res.status(409).json({ ok: false, deleted: false, message: 'No se puede eliminar la cuenta porque el usuario lidera equipos vigentes. Libere el liderazgo antes de continuar.' }); return }
+      if (plazasVigentesCount > 0) { res.status(409).json({ ok: false, deleted: false, message: 'No se puede eliminar la cuenta porque el usuario tiene una plaza temporal vigente. Cancelela antes de continuar.' }); return }
+
+      if (!existingRow.auth_user_id) {
+        res.json({ ok: true, deleted: true, authDeleted: false, cuentaAccesoEliminada: true, estado: 'inhabilitado', message: 'La cuenta de acceso ya estaba eliminada. El perfil y el historial se conservan como Inhabilitado.' })
+        return
+      }
+
+      const { error: authDeleteError } = await adminSupabase.auth.admin.deleteUser(existingRow.auth_user_id)
+      if (authDeleteError) {
+        const alreadyMissing = /user not found/i.test(authDeleteError.message ?? '')
+        if (!alreadyMissing) { jsonError(res, 500, 'No se pudo eliminar la cuenta de acceso.', authDeleteError.message); return }
+      }
+
+      const { data: profileAfter, error: profileAfterError } = await adminSupabase
+        .from('activadores')
+        .select('usuario_id, auth_user_id, estado')
+        .eq('usuario_id', userId)
+        .maybeSingle()
+      if (profileAfterError || !profileAfter) {
+        jsonError(res, 500, 'La cuenta se elimino pero no se pudo verificar el perfil historico.', profileAfterError?.message)
+        return
+      }
+
+      res.json({ ok: true, deleted: true, authDeleted: true, cuentaAccesoEliminada: profileAfter.auth_user_id == null, estado: 'inhabilitado', message: 'Cuenta de acceso eliminada permanentemente. El perfil y el historial se conservan como Inhabilitado.' })
     })
   )
 

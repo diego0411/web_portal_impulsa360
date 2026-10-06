@@ -189,12 +189,12 @@ async function activarUsuario(usuario) {
   } catch (error) { notifyError(getErrorMessage(error)) }
   finally { procesando.value = false }
 }
-async function eliminarUsuario(usuario) {
-  const password = await requestPasswordConfirmation({ title: 'Eliminar usuario', message: 'Ingresa tu contraseña actual para eliminar definitivamente este usuario.', confirmLabel: 'Eliminar definitivamente' })
+async function eliminarCuenta(usuario) {
+  const password = await requestPasswordConfirmation({ title: 'Eliminar cuenta', message: 'Se eliminara permanentemente la cuenta de acceso de este usuario. El historial del usuario se conservara. Ingresa tu contrasena actual para confirmar.', confirmLabel: 'Eliminar cuenta' })
   if (!password) return
   procesando.value = true
-  try { const result = await requestAdmin(`/admin/users/${usuario.usuario_id}`, { method: 'DELETE', body: { password } }); await cargarUsuarios(); notifySuccess(result.message ?? 'Usuario eliminado correctamente.') }
-  catch (error) { notifyError(error?.status === 409 ? (error.message && !error.message.startsWith('Error HTTP') ? error.message : 'No se puede eliminar este registro porque tiene información relacionada. Puede deshabilitarlo para conservar el historial.') : getErrorMessage(error)) }
+  try { const result = await requestAdmin(`/admin/users/${usuario.usuario_id}`, { method: 'DELETE', body: { password } }); await cargarUsuarios(); notifySuccess(result.message ?? 'Cuenta de acceso eliminada correctamente.') }
+  catch (error) { notifyError(error?.status === 409 && error.message && !error.message.startsWith('Error HTTP') ? error.message : getErrorMessage(error)) }
   finally { procesando.value = false }
 }
 function abrirPlazaTemporal(usuario) {
@@ -331,7 +331,7 @@ onMounted(cargarUsuarios)
             <td>{{ equiposDelUsuario(usuario) }}</td><td>{{ nombreLider(usuario) }}</td><td>{{ usuario.facturador_nombre || '-' }}</td><td>{{ rolesUsuario(usuario).map(etiqueta).join(', ') }}</td>
             <td>{{ esRol(usuario, 'lider') ? (usuario.puede_activar === true ? 'Sí' : 'No') : '-' }}</td>
             <td><span class="estado-etiqueta" :class="`estado-${usuario.estado ?? 'activo'}`">{{ etiqueta(usuario.estado ?? 'activo') }}</span></td><td>-</td>
-            <td><div class="acciones"><label v-if="esRol(usuario, 'activador')" class="scope-pill"><input type="checkbox" :checked="usuario.plaza_temporal_activa" :disabled="procesando" @change="cambiarPlazaTemporal(usuario, $event.target.checked)"> Plaza temporal</label><button class="boton boton-editar" :disabled="procesando" @click="editarUsuario(usuario)">Editar</button><button v-if="(usuario.estado ?? 'activo') === 'activo'" class="boton boton-eliminar" :disabled="procesando" @click="abrirInhabilitacion(usuario)">Inhabilitar</button><button v-else class="boton boton-guardar" :disabled="procesando" @click="activarUsuario(usuario)">Activar</button><button class="boton boton-eliminar" :disabled="procesando" @click="eliminarUsuario(usuario)">Eliminar definitivamente</button></div></td>
+            <td><div class="acciones"><label v-if="esRol(usuario, 'activador')" class="scope-pill"><input type="checkbox" :checked="usuario.plaza_temporal_activa" :disabled="procesando" @change="cambiarPlazaTemporal(usuario, $event.target.checked)"> Plaza temporal</label><button class="boton boton-editar" :disabled="procesando" @click="editarUsuario(usuario)">Editar</button><button v-if="(usuario.estado ?? 'activo') === 'activo'" class="boton boton-eliminar" :disabled="procesando" @click="abrirInhabilitacion(usuario)">Inhabilitar</button><button v-else class="boton boton-guardar" :disabled="procesando" @click="activarUsuario(usuario)">Activar</button><button v-if="(usuario.estado ?? 'activo') !== 'activo' && !usuario.cuenta_acceso_eliminada" class="boton boton-eliminar" :disabled="procesando" @click="eliminarCuenta(usuario)">Eliminar cuenta</button><span v-else-if="usuario.cuenta_acceso_eliminada" class="scope-pill">Cuenta eliminada</span></div></td>
           </template>
         </tr>
       </tbody></table></div>
