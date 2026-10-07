@@ -340,3 +340,9 @@ onMounted(cargarUsuarios)
     <teleport to="body"><div v-if="usuarioPlazaTemporal" class="confirm-overlay" @click.self="cerrarPlazaTemporal"><section class="confirm-modal" role="dialog" aria-modal="true" aria-label="Asignar plaza temporal"><h3 class="confirm-title">Plaza temporal</h3><p class="confirm-message">Asignación temporal para {{ usuarioPlazaTemporal.nombre }}. Su plaza base no cambiará.</p><select v-if="organizacion.available" v-model="plazaTemporalForm.plaza_temporal" class="input-texto"><option value="">Plaza temporal</option><option v-for="plaza in plazasCatalogo" :key="plaza.id" :value="plaza.nombre">{{ plaza.nombre }}</option></select><input v-else v-model="plazaTemporalForm.plaza_temporal" class="input-texto" placeholder="Plaza temporal"><select v-model="plazaTemporalForm.tipo_zona" class="input-texto"><option v-for="tipo in tiposZonaTemporal" :key="tipo.value" :value="tipo.value">{{ tipo.label }}</option></select><input v-model="plazaTemporalForm.ciudad_plaza" class="input-texto" placeholder="Ciudad/plaza"><label><span class="field-label">Inicio</span><input v-model="plazaTemporalForm.inicio" type="datetime-local" class="input-texto"></label><label><span class="field-label">Fin</span><input v-model="plazaTemporalForm.fin" type="datetime-local" class="input-texto"></label><textarea v-model="plazaTemporalForm.motivo" class="input-texto" placeholder="Motivo obligatorio" rows="3"></textarea><label class="scope-pill"><input v-model="plazaTemporalForm.activo" type="checkbox"> Activo</label><div class="confirm-actions"><button class="boton boton-cancelar" :disabled="procesando" @click="cerrarPlazaTemporal">Cancelar</button><button class="boton boton-guardar" :disabled="procesando" @click="guardarPlazaTemporal">{{ procesando ? 'Guardando...' : 'Asignar' }}</button></div></section></div></teleport>
   </section>
 </template>
+
+<style scoped>
+[role="group"][aria-label="Roles"] .scope-pill {
+  color: var(--ru-ink);
+}
+</style>
