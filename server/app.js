@@ -1650,9 +1650,11 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
       if (liderId) {
         const { data: leader, error: leaderErr } = await adminSupabase.from('activadores')
-          .select('usuario_id').eq('usuario_id', liderId).eq('rol', 'lider').eq('estado', 'activo').maybeSingle()
-        if (leaderErr || !leader) {
-          jsonError(res, 400, 'lider_id debe corresponder a un lider activo.', leaderErr?.message)
+          .select('usuario_id').eq('usuario_id', liderId).eq('estado', 'activo').maybeSingle()
+        const { data: leaderRole, error: leaderRoleErr } = await adminSupabase.from('activador_roles')
+          .select('usuario_id').eq('usuario_id', liderId).eq('rol', 'lider').maybeSingle()
+        if (leaderErr || !leader || leaderRoleErr || !leaderRole) {
+          jsonError(res, 400, 'lider_id debe corresponder a un lider activo.', leaderErr?.message ?? leaderRoleErr?.message)
           return
         }
       }
@@ -2222,11 +2224,12 @@ export function createAdminApiApp({ env = process.env } = {}) {
           .from('activadores')
           .select('usuario_id')
           .eq('usuario_id', liderId)
-          .eq('rol', 'lider')
           .eq('estado', 'activo')
           .maybeSingle()
-        if (leaderErr || !leader) {
-          jsonError(res, 400, 'lider_id debe corresponder a un lider activo.', leaderErr?.message)
+        const { data: leaderRole, error: leaderRoleErr } = await adminSupabase.from('activador_roles')
+          .select('usuario_id').eq('usuario_id', liderId).eq('rol', 'lider').maybeSingle()
+        if (leaderErr || !leader || leaderRoleErr || !leaderRole) {
+          jsonError(res, 400, 'lider_id debe corresponder a un lider activo.', leaderErr?.message ?? leaderRoleErr?.message)
           return
         }
       }
