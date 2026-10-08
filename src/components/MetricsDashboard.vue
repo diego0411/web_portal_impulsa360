@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { fetchAllActivaciones } from '../lib/activacionesService'
+import { fetchAllActivaciones, portalRequest } from '../lib/activacionesService'
 import MetricsHeatMap from './MetricsHeatMap.vue'
 import { nombreLegiblePlaza, normalizarPlazaClave } from '../lib/plazas'
 import { neutralizeSpreadsheetFormula } from '../lib/exportSafety'
@@ -19,6 +19,25 @@ const filtroEquipo = ref('')
 const rankingPage = ref(1)
 const rankingPageSize = 10
 watch([filtroDesde, filtroHasta, filtroPlaza, filtroActivador, filtroTipo, filtroLider, filtroEquipo], () => { rankingPage.value = 1 })
+// Catálogo de líderes desde /portal/users (mismo alcance autorizado del endpoint:
+// admin lo recibe completo; líder/banco lo reciben recortado por el backend).
+// Solo alimenta el selector; el filtrado y los agregados siguen usando el snapshot
+// histórico de cada activación (liderKey).
+const usuariosCatalogo = ref([])
+function rolesCatalogo(usuario) {
+  if (Array.isArray(usuario?.roles)) return usuario.roles.map((rol) => String(rol ?? '').trim().toLowerCase())
+  return [String(usuario?.rol ?? '').trim().toLowerCase()]
+}
+const catalogoLideres = computed(() => {
+  const lideres = new Map()
+  for (const usuario of usuariosCatalogo.value) {
+    if (!rolesCatalogo(usuario).includes('lider')) continue
+    const id = texto(usuario.usuario_id).toLowerCase()
+    if (!id || lideres.has(id)) continue
+    lideres.set(id, { nombre: texto(usuario.nombre), estado: texto(usuario.estado) || 'activo' })
+  }
+  return lideres
+})
 const numberFormatter = new Intl.NumberFormat('es-BO')
 const todayParts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]))
 const todayKey = `${todayParts.year}-${todayParts.month}-${todayParts.day}`
@@ -31,7 +50,14 @@ const weekStartKey = weekStartDate.toISOString().slice(0, 10)
 onMounted(async () => {
   loading.value = true
   errorMsg.value = null
-  try { activaciones.value = await fetchAllActivaciones() }
+  try {
+    const [rows, usersPayload] = await Promise.all([
+      fetchAllActivaciones(),
+      portalRequest('/portal/users').catch((error) => { logClientError('metricas.catalogo-lideres', error); return null }),
+    ])
+    activaciones.value = rows
+    usuariosCatalogo.value = usersPayload?.users ?? []
+  }
   catch (error) { logClientError('metricas.fetch', error); errorMsg.value = 'No fue posible obtener las activaciones.' }
   finally { loading.value = false }
 })
@@ -91,6 +117,8 @@ function liderEtiqueta(item, key) {
   if (resolvedKey.startsWith('lid:')) {
     const catalogado = liderCatalogo.value.get(resolvedKey.slice(4)) ?? ''
     if (catalogado) return catalogado
+    const delCatalogo = catalogoLideres.value.get(resolvedKey.slice(4))?.nombre ?? ''
+    if (delCatalogo) return delCatalogo
     return `Líder · ${resolvedKey.slice(4, 12)}`
   }
   return ''
@@ -140,6 +168,17 @@ const activadorCatalogo = computed(() => {
 // Key normalizada de tipo: solo diferencias no semanticas (espacios/case).
 // La etiqueta conserva el texto original (primer visto).
 function tipoKey(item) { return normalizado(texto(item.tipo_activacion)) || 'none' }
+// Catálogo funcional de tipos con valor técnico CONFIRMADO en código
+// (comparación exacta en validar_elegibilidad_reactivacion). Los demás tipos del
+// catálogo funcional (Comercio, Reactivación*, Transeúnte, Limbo, No habilitado,
+// Configuración de cuenta) no tienen valor técnico exacto confirmable en el
+// código disponible (solo prefijos/subcadenas o ninguna mención) y NO se inventan:
+// aparecen como históricos cuando existen en los datos. La categoría
+// (Comercio/Tienda/Transeúnte) no es un campo almacenado: se deriva del texto
+// combinado (clasificacionRegistro / es*Row), por eso el catálogo es plano.
+const TIPOS_FUNCIONALES = [
+  { tecnico: 'reimpresion_qr', nombre: 'Reimpresión QR' },
+]
 function equipoIdTexto(item) { return texto(item.equipo_id_registro).toLowerCase() }
 function equipoNumeroTexto(item) {
   const raw = item.equipo_numero_registro
@@ -243,6 +282,28 @@ const opciones = computed(() => {
     const key = equipoKey(item)
     if (!equipos.has(key)) equipos.set(key, { key, nombre: equipoEtiqueta(item, key) })
   }
+  // Unión con el catálogo funcional confirmado: agrega tipos oficiales aunque no
+  // tengan filas (seleccionarlos muestra cero). Los históricos presentes en datos
+  // se conservan; las categorías del catálogo no se fusionan (no son campo).
+  for (const funcional of TIPOS_FUNCIONALES) {
+    const key = tipoKey({ tipo_activacion: funcional.tecnico })
+    if (key !== 'none' && !tipos.has(key)) tipos.set(key, { key, nombre: funcional.nombre })
+  }
+  // Unión con el catálogo autorizado: agrega líderes activos sin activaciones y
+  // anota el estado de los históricos inhabilitados solo si el catálogo lo informa.
+  // No altera el filtrado: las filas se siguen atribuyendo por su snapshot.
+  for (const [id, catalogado] of catalogoLideres.value) {
+    const key = `lid:${id}`
+    const existente = lideres.get(key)
+    if (existente) {
+      if (catalogado.estado !== 'activo' && !/\(inhabilitado\)$/i.test(existente.nombre)) {
+        existente.nombre = `${existente.nombre} (inhabilitado)`
+      }
+      continue
+    }
+    if (catalogado.estado !== 'activo' || !catalogado.nombre) continue
+    lideres.set(key, { key, nombre: catalogado.nombre })
+  }
   const ordenar = (entries) => [...entries].sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
   const ordenarEquipos = (entries) => [...entries].sort((a, b) => {
     const numeroA = a.nombre.match(/^Equipo #(\d+)/)?.[1]
@@ -265,7 +326,7 @@ const dashboard = computed(() => {
   const teamMonthStats = new Map()
   const activadoresUnicos = new Set()
   const comerciosUnicos = new Set()
-  const nombresPlaza = new Map([['none', 'Sin plaza']]), nombresActivador = new Map([['none', 'Sin activador']]), nombresTipo = new Map([['none', 'Sin especificar']]), nombresLider = new Map()
+  const nombresPlaza = new Map([['none', 'Sin plaza']]), nombresActivador = new Map([['none', 'Sin activador']]), nombresTipo = new Map([['none', 'Sin especificar'], ...TIPOS_FUNCIONALES.map((t) => [tipoKey({ tipo_activacion: t.tecnico }), t.nombre])]), nombresLider = new Map()
   for (const item of activaciones.value) {
     const fecha = fechaRegistro(item)
     const plaza = plazaKey(item)
