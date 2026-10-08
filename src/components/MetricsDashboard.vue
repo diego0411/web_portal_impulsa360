@@ -21,9 +21,9 @@ const rankingPageSize = 10
 watch([filtroDesde, filtroHasta, filtroPlaza, filtroActivador, filtroTipo, filtroLider, filtroEquipo], () => { rankingPage.value = 1 })
 // Catálogo de líderes desde /portal/users (mismo alcance autorizado del endpoint:
 // admin lo recibe completo; líder/banco lo reciben recortado por el backend).
-// Solo alimenta el selector; el filtrado y los agregados siguen usando el snapshot
-// histórico de cada activación (liderKey).
+// Relaciona usuario_id con su líder actual sin ampliar las activaciones autorizadas.
 const usuariosCatalogo = ref([])
+const usuariosPorId = computed(() => new Map(usuariosCatalogo.value.map((usuario) => [texto(usuario.usuario_id).toLowerCase(), usuario])))
 function rolesCatalogo(usuario) {
   if (Array.isArray(usuario?.roles)) return usuario.roles.map((rol) => String(rol ?? '').trim().toLowerCase())
   return [String(usuario?.rol ?? '').trim().toLowerCase()]
@@ -53,7 +53,7 @@ onMounted(async () => {
   try {
     const [rows, usersPayload] = await Promise.all([
       fetchAllActivaciones(),
-      portalRequest('/portal/users').catch((error) => { logClientError('metricas.catalogo-lideres', error); return null }),
+      portalRequest('/portal/users'),
     ])
     activaciones.value = rows
     usuariosCatalogo.value = usersPayload?.users ?? []
@@ -98,21 +98,15 @@ const plazaCatalogo = computed(() => {
   }
   return nombres
 })
-// Identidad canonica de lider (snapshot historico; las columnas lider_nombre/lider/
-// nombre_lider no existen en el contrato de activaciones):
-// 1) lider_id_registro (UUID FK a activadores)
-// 2) lider_nombre_registro normalizado
-// 3) 'none' (sin lider)
+// Mismo criterio de equipo actual que /portal/activations.
+// El snapshot histórico no restringe ni atribuye las métricas de líder actual.
 function liderKey(item) {
-  const id = texto(item.lider_id_registro).toLowerCase()
+  const usuario = usuariosPorId.value.get(texto(item.usuario_id).toLowerCase())
+  const id = texto(usuario?.lider_id).toLowerCase()
   if (id) return `lid:${id}`
-  const nombre = texto(item.lider_nombre_registro)
-  if (nombre) return `lname:${nombre.toLocaleLowerCase('es')}`
   return 'none'
 }
 function liderEtiqueta(item, key) {
-  const nombre = texto(item.lider_nombre_registro)
-  if (nombre) return nombre
   const resolvedKey = key ?? liderKey(item)
   if (resolvedKey.startsWith('lid:')) {
     const catalogado = liderCatalogo.value.get(resolvedKey.slice(4)) ?? ''
@@ -125,23 +119,20 @@ function liderEtiqueta(item, key) {
 }
 const liderCatalogo = computed(() => {
   const nombres = new Map()
-  for (const item of activaciones.value) {
-    const id = texto(item.lider_id_registro).toLowerCase()
+  for (const usuario of usuariosCatalogo.value) {
+    const id = texto(usuario.lider_id).toLowerCase()
     if (!id || nombres.has(id)) continue
-    const nombre = texto(item.lider_nombre_registro)
+    const nombre = texto(usuario.lider_nombre)
     if (nombre) nombres.set(id, nombre)
   }
   return nombres
 })
 // Identidad canonica de activador (snapshot historico):
 // 1) usuario_id (uuid not null: quien registro la activacion)
-// 2) impulsador normalizado (fallback historico)
-// 3) 'none'
+// Sin UUID no se atribuye una persona por su nombre visible.
 function activadorKey(item) {
   const id = texto(item.usuario_id).toLowerCase()
   if (id) return `uid:${id}`
-  const nombre = texto(item.impulsador)
-  if (nombre) return `uname:${nombre.toLocaleLowerCase('es')}`
   return 'none'
 }
 function activadorEtiqueta(item, key) {
@@ -243,6 +234,16 @@ function equipoEtiqueta(item, key) {
   return 'Sin equipo'
 }
 function comercioRegistro(item) { return texto(item.nombre_comercio) || texto(item.comercio) || texto(item.cliente) || texto(item.nombres_cliente) }
+// Solo integrantes del catálogo autorizado; la pertenencia es actual y por UUID.
+const integrantesEquipo = computed(() => {
+  if (!filtroEquipo.value) return []
+  return [...usuariosPorId.value.values()].filter((usuario) => {
+    const equipoId = texto(usuario.equipo_id).toLowerCase()
+    if (!equipoId || !texto(usuario.usuario_id) || !rolesCatalogo(usuario).includes('activador')) return false
+    if (`id:${equipoId}` !== filtroEquipo.value) return false
+    return !filtroLider.value || liderKey(usuario) === filtroLider.value
+  })
+})
 function formatNumber(value) { return numberFormatter.format(Number(value) || 0) }
 function formatDecimal(value) { return numberFormatter.format(Number(value.toFixed(1)) || 0) }
 function formatDate(value) { const [year, month, day] = String(value || '').split('-'); return year && month && day ? `${day}/${month}/${year}` : 'Sin fecha' }
@@ -282,6 +283,17 @@ const opciones = computed(() => {
     const key = equipoKey(item)
     if (!equipos.has(key)) equipos.set(key, { key, nombre: equipoEtiqueta(item, key) })
   }
+  // Hace seleccionables también los equipos e integrantes sin registros.
+  for (const usuario of usuariosPorId.value.values()) {
+    const id = texto(usuario.equipo_id).toLowerCase()
+    if (!id || !rolesCatalogo(usuario).includes('activador')) continue
+    const key = `id:${id}`
+    if (!equipos.has(key)) equipos.set(key, { key, nombre: equipoEtiqueta({ equipo_id_registro: id, equipo_numero_registro: usuario.equipo_numero, equipo_nombre_registro: usuario.equipo_nombre }, key) })
+  }
+  for (const usuario of integrantesEquipo.value) {
+    const key = activadorKey(usuario)
+    if (!activadores.has(key)) activadores.set(key, { key, nombre: texto(usuario.nombre) || activadorEtiqueta(usuario, key) })
+  }
   // Unión con el catálogo funcional confirmado: agrega tipos oficiales aunque no
   // tengan filas (seleccionarlos muestra cero). Los históricos presentes en datos
   // se conservan; las categorías del catálogo no se fusionan (no son campo).
@@ -290,8 +302,7 @@ const opciones = computed(() => {
     if (key !== 'none' && !tipos.has(key)) tipos.set(key, { key, nombre: funcional.nombre })
   }
   // Unión con el catálogo autorizado: agrega líderes activos sin activaciones y
-  // anota el estado de los históricos inhabilitados solo si el catálogo lo informa.
-  // No altera el filtrado: las filas se siguen atribuyendo por su snapshot.
+  // anota el estado de los líderes actuales inhabilitados si el catálogo lo informa.
   for (const [id, catalogado] of catalogoLideres.value) {
     const key = `lid:${id}`
     const existente = lideres.get(key)
@@ -393,8 +404,19 @@ const dashboard = computed(() => {
     semanal: maps.semana.size ? kpis.total / maps.semana.size : 0,
     mensual: maps.mes.size ? kpis.total / maps.mes.size : 0,
   }
-  const traducir = (entries, nombres) => entries.map((entry) => ({ label: nombres.get(entry.label) ?? entry.label, value: entry.value }))
-  return { rows, points, kpis: { ...kpis, comercios: comerciosUnicos.size }, promedios, activadoresUnicos: activadoresUnicos.size, porEquipo, resumenEquipoMes, porDia: ranking(maps.dia).sort((a, b) => a.label.localeCompare(b.label)), porPlaza: traducir(ranking(maps.plaza), nombresPlaza), topActivadores: traducir(ranking(maps.activador), nombresActivador), porTipo: traducir(ranking(maps.tipo), nombresTipo), porClasificacion: ranking(maps.clasificacion), porErrores: ranking(maps.errores), topLideres: traducir(ranking(maps.lider, 10), nombresLider) }
+  const traducir = (entries, nombres) => entries.map((entry) => ({ key: entry.label, label: nombres.get(entry.label) ?? entry.label, value: entry.value }))
+  let topActivadores = traducir(ranking(maps.activador), nombresActivador)
+  if (filtroEquipo.value) {
+    const porUsuario = new Map(topActivadores.map((item) => [item.key, item]))
+    for (const usuario of integrantesEquipo.value) {
+      const key = activadorKey(usuario)
+      if (filtroActivador.value && filtroActivador.value !== key) continue
+      const existente = porUsuario.get(key)
+      porUsuario.set(key, { key, label: texto(usuario.nombre) || existente?.label || activadorEtiqueta(usuario, key), value: existente?.value ?? 0 })
+    }
+    topActivadores = [...porUsuario.values()].sort((a, b) => b.value - a.value || a.label.localeCompare(b.label, 'es') || a.key.localeCompare(b.key))
+  }
+  return { rows, points, kpis: { ...kpis, comercios: comerciosUnicos.size }, promedios, activadoresUnicos: activadoresUnicos.size, porEquipo, resumenEquipoMes, porDia: ranking(maps.dia).sort((a, b) => a.label.localeCompare(b.label)), porPlaza: traducir(ranking(maps.plaza), nombresPlaza), topActivadores, porTipo: traducir(ranking(maps.tipo), nombresTipo), porClasificacion: ranking(maps.clasificacion), porErrores: ranking(maps.errores), topLideres: traducir(ranking(maps.lider, 10), nombresLider) }
 })
 
 const equipoMesHeatmap = computed(() => {
@@ -479,10 +501,10 @@ function exportarDashboard() {
       <label><span class="field-label">Plaza / ciudad</span><select v-model="filtroPlaza" class="input-texto"><option value="">Todas</option><option v-for="plaza in opciones.plazas" :key="plaza.key" :value="plaza.key">{{ plaza.nombre }}</option></select></label>
       <label><span class="field-label">Activador</span><select v-model="filtroActivador" class="input-texto"><option value="">Todos</option><option v-for="activador in opciones.activadores" :key="activador.key" :value="activador.key">{{ activador.nombre }}</option></select></label>
       <label><span class="field-label">Equipo</span><select v-model="filtroEquipo" class="input-texto"><option value="">Todos</option><option v-for="equipo in opciones.equipos" :key="equipo.key" :value="equipo.key">{{ equipo.nombre }}</option></select></label>
-      <label v-if="opciones.lideres.length"><span class="field-label">Líder</span><select v-model="filtroLider" class="input-texto"><option value="">Todos</option><option v-for="lider in opciones.lideres" :key="lider.key" :value="lider.key">{{ lider.nombre }}</option></select></label>
+      <label v-if="opciones.lideres.length"><span class="field-label">Líder actual</span><select v-model="filtroLider" class="input-texto"><option value="">Todos</option><option v-for="lider in opciones.lideres" :key="lider.key" :value="lider.key">{{ lider.nombre }}</option></select></label>
       <label><span class="field-label">Tipo de activación</span><select v-model="filtroTipo" class="input-texto"><option value="">Todos</option><option v-for="tipo in opciones.tipos" :key="tipo.key" :value="tipo.key">{{ tipo.nombre }}</option></select></label>
     </div></section>
-    <p v-if="loading" class="panel-empty">Cargando indicadores...</p><p v-else-if="errorMsg" class="mensaje-error">{{ errorMsg }}</p><p v-else-if="!dashboard.rows.length" class="panel-empty">No hay activaciones para los filtros seleccionados.</p>
+    <p v-if="loading" class="panel-empty">Cargando indicadores...</p><p v-else-if="errorMsg" class="mensaje-error">{{ errorMsg }}</p><p v-else-if="!dashboard.rows.length && !dashboard.topActivadores.length" class="panel-empty">No hay activaciones para los filtros seleccionados.</p>
     <div v-else class="metrics-saas-content">
       <section class="metrics-kpi-grid metrics-kpi-grid-compact"><article v-for="card in tarjetas" :key="card.key" class="metrics-kpi-card" :title="`${card.label}: ${card.value}`"><span class="metrics-kpi-icon">{{ card.icon }}</span><div><p class="metrics-kpi-label">{{ card.label }}</p><p class="metrics-kpi-value">{{ card.value }}</p><p class="metrics-kpi-note">{{ card.note }}</p></div></article></section>
       <section class="metrics-line-grid">
@@ -492,12 +514,12 @@ function exportarDashboard() {
         <article class="metrics-chart-card metrics-small-chart"><h3>Activaciones por Tipo</h3><p>Todos los tipos registrados.</p><div class="chart-legend"><span class="legend-dot"></span><span>Tipos filtrados</span></div><div class="vertical-bars adaptive-bars" :style="{ '--items': dashboard.porTipo.length }"><div v-for="item in dashboard.porTipo" :key="item.label" class="vertical-bar" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><strong>{{ formatNumber(item.value) }}</strong><span :style="{ height: barHeight(item.value, dashboard.porTipo) }"></span><small>{{ item.label }}</small></div></div></article>
         <article class="metrics-chart-card metrics-small-chart"><h3>Ciudades</h3><p>Distribución por plaza o ciudad.</p><div class="chart-legend"><span class="legend-dot"></span><span>Top 10</span></div><div class="vertical-bars city-bars"><div v-for="item in dashboard.porPlaza.slice(0, 10)" :key="item.label" class="vertical-bar" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><strong>{{ formatNumber(item.value) }}</strong><span :style="{ height: barHeight(item.value, dashboard.porPlaza) }"></span><small>{{ item.label }}</small></div></div></article>
         <article class="metrics-chart-card metrics-small-chart"><h3>Equipos</h3><p>Top equipos por activaciones.</p><div class="dashboard-bars compact-bars"><div v-for="team in dashboard.porEquipo.slice(0, 8)" :key="team.nombre" class="dashboard-bar-row" :title="`${team.nombre}: ${formatNumber(team.total)} activaciones`"><span>{{ team.nombre }}</span><div class="metric-track"><div class="metric-fill metric-fill-soft" :style="{ width: anchoBarra(team.total, dashboard.porEquipo.map((item) => ({ value: item.total }))) }"></div></div><strong>{{ formatNumber(team.total) }}</strong></div></div></article>
-        <article class="metrics-chart-card metrics-small-chart"><h3>Líderes</h3><p>Registros asociados a líderes disponibles.</p><div v-if="dashboard.topLideres.length" class="dashboard-bars compact-bars"><div v-for="item in dashboard.topLideres.slice(0, 8)" :key="item.label" class="dashboard-bar-row" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><span>{{ item.label }}</span><div class="metric-track"><div class="metric-fill" :style="{ width: anchoBarra(item.value, dashboard.topLideres) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div><p v-else class="metrics-empty-small">Sin líderes resolubles.</p></article>
+        <article class="metrics-chart-card metrics-small-chart"><h3>Líderes</h3><p>Activaciones de integrantes del equipo actual.</p><div v-if="dashboard.topLideres.length" class="dashboard-bars compact-bars"><div v-for="item in dashboard.topLideres.slice(0, 8)" :key="item.label" class="dashboard-bar-row" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><span>{{ item.label }}</span><div class="metric-track"><div class="metric-fill" :style="{ width: anchoBarra(item.value, dashboard.topLideres) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div><p v-else class="metrics-empty-small">Sin líderes resolubles.</p></article>
         <article class="metrics-chart-card metrics-small-chart"><h3>Errores</h3><p>Activaciones con y sin error.</p><div class="dashboard-bars compact-bars"><div v-for="item in dashboard.porErrores" :key="item.label" class="dashboard-bar-row" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><span>{{ item.label }}</span><div class="metric-track"><div class="metric-fill" :style="{ width: anchoBarra(item.value, dashboard.porErrores) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div></article>
       </section>
       <section class="metrics-bottom-grid">
         <article class="metrics-chart-card metrics-table-card"><h3>Resumen Equipo y Activadores</h3><p>Matriz de activaciones por equipo y mes del rango filtrado.</p><div class="table-wrap metrics-table-scroll heatmap-table-wrap"><table class="tabla-activaciones metrics-heat-table"><thead><tr><th class="sticky-col">Equipo</th><th v-for="mes in equipoMesHeatmap.meses" :key="mes">{{ formatMonth(mes) }}</th><th>Total</th></tr></thead><tbody><tr v-for="row in equipoMesHeatmap.rows" :key="row.equipo"><td class="sticky-col heat-team-name">{{ row.equipo }}</td><td v-for="cell in row.values" :key="`${row.equipo}-${cell.mes}`" class="heat-cell" :style="heatCellStyle(cell.value)" :title="`${row.equipo} · ${formatMonth(cell.mes)}: ${formatNumber(cell.value)} activaciones`">{{ formatNumber(cell.value) }}</td><td class="heat-total">{{ formatNumber(row.total) }}</td></tr></tbody><tfoot><tr><th class="sticky-col">Total</th><td v-for="mes in equipoMesHeatmap.meses" :key="`total-${mes}`" class="heat-total">{{ formatNumber(equipoMesHeatmap.totals[mes]) }}</td><td class="heat-grand-total">{{ formatNumber(equipoMesHeatmap.grandTotal) }}</td></tr></tfoot></table></div></article>
-        <article class="metrics-chart-card metrics-table-card"><h3>Ranking Activadores</h3><p>Ordenado por activaciones del corte filtrado.</p><div class="table-wrap metrics-table-scroll ranking-table-wrap"><table class="tabla-activaciones metrics-ranking-table"><thead><tr><th>#</th><th>Activador</th><th>Activaciones</th><th>%</th></tr></thead><tbody><tr v-for="(item, index) in rankingPaginado" :key="item.label" :title="`${item.label}: ${formatNumber(item.value)} activaciones · ${porcentajeDelTotal(item.value)}`"><td>{{ rankingStartIndex + index + 1 }}</td><td>{{ item.label }}</td><td><div class="ranking-activation-cell"><span class="ranking-fill" :style="{ width: anchoBarra(item.value, dashboard.topActivadores) }"></span><strong>{{ formatNumber(item.value) }}</strong></div></td><td class="ranking-percent">{{ porcentajeDelTotal(item.value) }}</td></tr></tbody></table></div><div v-if="dashboard.topActivadores.length > rankingPageSize" class="ranking-pagination"><button class="boton boton-pequeno" :disabled="rankingSafePage <= 1" @click="rankingAnterior">Anterior</button><span>{{ rankingStartIndex + 1 }}-{{ Math.min(rankingStartIndex + rankingPageSize, dashboard.topActivadores.length) }} / {{ formatNumber(dashboard.topActivadores.length) }}</span><button class="boton boton-pequeno" :disabled="rankingSafePage >= rankingTotalPages" @click="rankingSiguiente">Siguiente</button></div></article>
+        <article class="metrics-chart-card metrics-table-card"><h3>Ranking Activadores</h3><p>Ordenado por activaciones del corte filtrado.</p><div class="table-wrap metrics-table-scroll ranking-table-wrap"><table class="tabla-activaciones metrics-ranking-table"><thead><tr><th>#</th><th>Activador</th><th>Activaciones</th><th>%</th></tr></thead><tbody><tr v-for="(item, index) in rankingPaginado" :key="item.key" :title="`${item.label}: ${formatNumber(item.value)} activaciones · ${porcentajeDelTotal(item.value)}`"><td>{{ rankingStartIndex + index + 1 }}</td><td>{{ item.label }}</td><td><div class="ranking-activation-cell"><span class="ranking-fill" :style="{ width: item.value ? anchoBarra(item.value, dashboard.topActivadores) : '0%' }"></span><strong>{{ formatNumber(item.value) }}</strong></div></td><td class="ranking-percent">{{ porcentajeDelTotal(item.value) }}</td></tr></tbody></table></div><div v-if="dashboard.topActivadores.length > rankingPageSize" class="ranking-pagination"><button class="boton boton-pequeno" :disabled="rankingSafePage <= 1" @click="rankingAnterior">Anterior</button><span>{{ rankingStartIndex + 1 }}-{{ Math.min(rankingStartIndex + rankingPageSize, dashboard.topActivadores.length) }} / {{ formatNumber(dashboard.topActivadores.length) }}</span><button class="boton boton-pequeno" :disabled="rankingSafePage >= rankingTotalPages" @click="rankingSiguiente">Siguiente</button></div></article>
       </section>
       <article class="metrics-chart-card metrics-map-card"><div class="metrics-card-heading"><div><h3>Mapa de calor</h3><p>Concentración geográfica de activaciones.</p></div><span class="meta-pill">{{ formatNumber(dashboard.points.length) }} puntos</span></div><MetricsHeatMap v-if="dashboard.points.length" :points="dashboard.points" /><p v-else class="panel-empty">No hay coordenadas válidas para este corte.</p></article>
     </div>
