@@ -1309,8 +1309,19 @@ export function createAdminApiApp({ env = process.env } = {}) {
     const { data: authData, error: authError } = await adminSupabase.auth.getUser(authorization.slice(7))
     if (authError || !authData.user) return null
     const { data: profile } = await adminSupabase.from('activadores').select('usuario_id,auth_user_id,nombre,email,rol,estado,lider_id,puede_activar').eq('auth_user_id', authData.user.id).maybeSingle()
-    if (!profile || profile.estado !== 'activo' || !['administrador', 'lider', 'banco'].includes(profile.rol)) return null
-    return profile
+    if (!profile || profile.estado !== 'activo') return null
+    const { data: roleRows, error: rolesError } = await adminSupabase
+      .from('activador_roles')
+      .select('rol')
+      .eq('usuario_id', profile.usuario_id)
+    if (rolesError) {
+      return ['administrador', 'lider', 'banco'].includes(profile.rol)
+        ? { ...profile, roles: [profile.rol] }
+        : null
+    }
+    const roles = [...new Set([profile.rol, ...(roleRows ?? []).map((row) => row.rol)].filter(Boolean))]
+    if (!roles.includes('administrador') && !['lider', 'banco'].includes(profile.rol)) return null
+    return { ...profile, roles }
   }
 
   async function requirePortalAuth(req, res, next) {
@@ -1324,7 +1335,9 @@ export function createAdminApiApp({ env = process.env } = {}) {
     const parsed = parseBasicAuth(req.headers.authorization)
     if (!parsed) {
       const profile = await resolvePortalUser(req)
-      if (profile?.rol === 'administrador') { req.portalUser = profile; next(); return }
+      const isActivationEdit = req.method === 'PATCH' && /^\/activaciones\/[^/]+\/?$/.test(req.path)
+      const canEditActivation = isActivationEdit && profile?.roles?.includes('administrador')
+      if (profile?.rol === 'administrador' || canEditActivation) { req.portalUser = profile; next(); return }
       if (typeof req.headers.authorization === 'string' && req.headers.authorization.startsWith('Bearer ')) {
         jsonError(res, 403, 'Se requiere un administrador activo.')
         return

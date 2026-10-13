@@ -54,10 +54,13 @@ const inputFotoPrincipal = ref(null)
 const inputFotoCashIn = ref(null)
 const formularioEdicion = ref({})
 const motivoEdicion = ref('')
-const { session, isAdmin } = useAuth()
+const { session, profile, isAdmin } = useAuth()
 const canAdminister = computed(() => !AUTH_ENABLED || isAdmin.value)
+const hasAdminRole = computed(() =>
+  profile.value?.rol === 'administrador' || profile.value?.roles?.includes('administrador')
+)
 const canEditActivaciones = computed(() =>
-  Boolean(session.value?.access_token && canAdminister.value)
+  Boolean(session.value?.access_token && (!AUTH_ENABLED || hasAdminRole.value))
 )
 
 const opcionesOrg = ref({ available: false, plazas: [] })
@@ -923,7 +926,7 @@ async function descargarExcelPersonalizado() {
         <aside class="detalle-activacion" role="dialog" aria-modal="true" aria-label="Detalle de activacion">
           <header class="detalle-header">
             <div><p class="view-kicker">Registro de activacion</p><h3 class="detalle-title">{{ getClienteComercio(activacionSeleccionada) }}</h3></div>
-            <button v-if="canAdminister && !editandoActivacion" type="button" class="boton boton-editar" :disabled="!canEditActivaciones || !activacionSeleccionada.id" @click="iniciarEdicion">Editar</button>
+            <button v-if="canEditActivaciones && !editandoActivacion" type="button" class="boton boton-editar" :disabled="!activacionSeleccionada.id" @click="iniciarEdicion">Editar</button>
             <button type="button" class="detalle-close" aria-label="Cerrar detalle" @click="cerrarDetalle">×</button>
           </header>
           <form v-if="editandoActivacion" class="detalle-body" @submit.prevent="guardarEdicion">
