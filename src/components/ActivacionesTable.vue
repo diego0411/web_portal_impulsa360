@@ -14,6 +14,17 @@ import { AUTH_ENABLED } from '../lib/featureFlags'
 import { nombreLegiblePlaza } from '../lib/plazas'
 import { neutralizeExportRow, neutralizeSpreadsheetFormula } from '../lib/exportSafety'
 import { logClientError } from '../lib/logging'
+import {
+  ACTIVATION_CATEGORIES,
+  ACTIVATION_ERROR_TYPES,
+  ACTIVATION_TYPES_BY_CATEGORY,
+  COMMERCE_CATEGORIES,
+  STORE_SIZES,
+  inferActivationCategory,
+  isGeneralCommerce,
+  normalizeActivationClassification,
+  validateActivationEdit,
+} from '../lib/activationEditing'
 
 const props = defineProps({
   activaciones: {
@@ -53,6 +64,7 @@ const fotoCashInArchivo = ref(null)
 const inputFotoPrincipal = ref(null)
 const inputFotoCashIn = ref(null)
 const formularioEdicion = ref({})
+const formularioEdicionInicial = ref({})
 const motivoEdicion = ref('')
 const { session, profile, isAdmin } = useAuth()
 const canAdminister = computed(() => !AUTH_ENABLED || isAdmin.value)
@@ -239,6 +251,7 @@ function etiquetaCampo(key) {
     tamano_tienda: 'Tamano de tienda', foto_url: 'Fotografia', descargo_app: 'Descargo la app',
     cash_in: 'Cash-In', cash_out: 'Cash-Out', qr_fisico: 'QR fisico', p2p: 'P2P',
     hubo_error: 'Hubo error', descripcion_error: 'Descripcion del error',
+    creditos: 'Créditos', remesas: 'Remesas',
   }
   return especiales[key] ?? key.replace(/_/g, ' ').replace(/^./, (letter) => letter.toUpperCase())
 }
@@ -296,7 +309,7 @@ function esTranseunteRow(row) {
 const seccionesDetalleConfig = [
   { title: 'Datos generales', keys: ['fecha_activacion', 'impulsador', 'ciudad_activacion', 'plaza', 'zona_activacion'] },
   { title: 'Datos del cliente', keys: ['nombres_cliente', 'apellidos_cliente', 'ci_cliente', 'telefono_cliente', 'email_cliente'] },
-  { title: 'Informacion de la activacion', keys: ['tipo_activacion', 'descargo_app', 'registro', 'cash_in', 'cash_out', 'p2p', 'qr_fisico', 'respaldo'] },
+  { title: 'Informacion de la activacion', keys: ['tipo_activacion', 'descargo_app', 'registro', 'cash_in', 'cash_out', 'p2p', 'qr_fisico', 'respaldo', 'creditos', 'remesas'] },
   { title: 'Informacion del comercio o tienda', keys: ['nombre_comercio', 'comercio', 'cliente', 'tipo_comercio', 'tamano_tienda', 'tipo_tienda', 'rubro_comercio', 'rubro_comercio_otro', 'comercio_fuera_mercado', 'es_plaza_temporal', 'plaza_temporal'] },
   { title: 'Evidencias y fotografias', keys: ['foto_url', 'foto_cash_in', 'foto_cashin'] },
   { title: 'Ubicacion', keys: ['latitud', 'longitud', 'direccion', 'ubicacion'] },
@@ -308,11 +321,12 @@ const seccionesDetalle = computed(() => {
   const row = activacionSeleccionada.value
   if (!row) return []
   const usedKeys = new Set(seccionesDetalleConfig.flatMap((section) => section.keys))
+  const siempreVisibles = new Set(['creditos', 'remesas'])
   const sections = seccionesDetalleConfig.map((section) => ({
     title: section.title,
     fields: section.keys
-      .filter((key) => tieneValor(row[key]))
-      .map((key) => ({ key, label: etiquetaCampo(key), value: row[key], signedUrl: getFotoSignedUrl(row, key), image: key.toLowerCase().includes('foto') })),
+      .filter((key) => tieneValor(row[key]) || siempreVisibles.has(key))
+      .map((key) => ({ key, label: etiquetaCampo(key), value: siempreVisibles.has(key) ? row[key] === true : row[key], signedUrl: getFotoSignedUrl(row, key), image: key.toLowerCase().includes('foto') })),
   }))
   const extras = Object.entries(row)
     .filter(([key, value]) => !usedKeys.has(key) && tieneValor(value))
@@ -361,11 +375,13 @@ const nombreEditableKey = computed(() => {
 })
 const plazaEditableKey = computed(() => tieneCampo(activacionSeleccionada.value, 'ciudad_activacion') ? 'ciudad_activacion' : 'plaza')
 const resultadoEditableKey = computed(() => ['resultado', 'estado'].find((key) => tieneCampo(activacionSeleccionada.value, key)) ?? null)
-const esActivacionComercio = computed(() => normalizeText(formularioEdicion.value.tipo_activacion).includes('comercio'))
-const esTiendaBarrio = computed(() => {
-  const tipo = `${normalizeText(formularioEdicion.value.tipo_activacion)} ${normalizeText(activacionSeleccionada.value?.tipo_comercio)}`
-  return tipo.includes('tienda') && tipo.includes('barrio')
-})
+const tiposActivacionDisponibles = computed(() => ACTIVATION_TYPES_BY_CATEGORY[formularioEdicion.value.tipo_grupo] ?? [])
+const esActivacionComercio = computed(() => isGeneralCommerce(
+  formularioEdicion.value.tipo_grupo,
+  formularioEdicion.value.tipo_activacion,
+))
+const esTiendaBarrio = computed(() => formularioEdicion.value.tipo_grupo === 'tienda_barrio')
+const motivoEdicionFaltante = computed(() => !motivoEdicion.value.trim())
 
 function iniciarEdicion() {
   const row = activacionSeleccionada.value
@@ -375,27 +391,74 @@ function iniciarEdicion() {
     telefono_cliente: row.telefono_cliente ?? '',
     email_cliente: row.email_cliente ?? '',
     plaza: row[plazaEditableKey.value] ?? '',
+    tipo_grupo: inferActivationCategory(row),
     tipo_activacion: row.tipo_activacion ?? '',
     resultado: resultadoEditableKey.value ? row[resultadoEditableKey.value] ?? '' : '',
-    observaciones: row.observaciones ?? '',
-    tipo_tienda: row.tipo_tienda ?? '',
+    tamano_tienda: row.tamano_tienda ?? row.tipo_tienda ?? '',
+    tipo_tienda: row.tipo_tienda ?? null,
+    tipo_comercio: row.tipo_comercio ?? null,
     rubro_comercio: row.rubro_comercio ?? '',
     rubro_comercio_otro: row.rubro_comercio_otro ?? '',
-    comercio_fuera_mercado: row.comercio_fuera_mercado === true,
+    comercio_fuera_mercado: typeof row.comercio_fuera_mercado === 'boolean' ? row.comercio_fuera_mercado : null,
     tipo_error: row.tipo_error ?? '',
     descripcion_error: row.descripcion_error ?? '',
+    descargo_app: row.descargo_app === true,
+    registro: row.registro === true,
+    cash_in: row.cash_in === true,
+    cash_out: row.cash_out === true,
+    p2p: row.p2p === true,
+    qr_fisico: row.qr_fisico === true,
+    respaldo: row.respaldo === true,
+    hubo_error: row.hubo_error === true,
     es_plaza_temporal: row.es_plaza_temporal === true,
     plaza_temporal: row.plaza_temporal ?? '',
   }
+  formularioEdicionInicial.value = { ...formularioEdicion.value }
   motivoEdicion.value = ''
   limpiarFotosSeleccionadas()
   editandoActivacion.value = true
+}
+
+function confirmarCambioClasificacion(mensaje) {
+  return typeof window === 'undefined' || window.confirm(mensaje)
+}
+
+function cambiarCategoria(event) {
+  const categoria = event.target.value
+  const actual = formularioEdicion.value.tipo_grupo
+  if (categoria === actual) return
+  if (!confirmarCambioClasificacion('Cambiar la categoría limpiará únicamente los campos incompatibles. ¿Continuar?')) {
+    event.target.value = actual
+    return
+  }
+  formularioEdicion.value = normalizeActivationClassification({
+    ...formularioEdicion.value,
+    tipo_grupo: categoria,
+    tipo_activacion: '',
+  })
+}
+
+function cambiarTipoActivacion(event) {
+  const tipo = event.target.value
+  const actual = formularioEdicion.value.tipo_activacion
+  if (tipo === actual) return
+  const limpiaComercio = esActivacionComercio.value &&
+    !isGeneralCommerce(formularioEdicion.value.tipo_grupo, tipo)
+  if (limpiaComercio && !confirmarCambioClasificacion('Este tipo no utiliza datos de rubro comercial. ¿Cambiar y limpiar esos campos?')) {
+    event.target.value = actual
+    return
+  }
+  formularioEdicion.value = normalizeActivationClassification({
+    ...formularioEdicion.value,
+    tipo_activacion: tipo,
+  })
 }
 
 function cancelarEdicion() {
   if (guardandoEdicion.value || reemplazandoFoto.value) return
   editandoActivacion.value = false
   formularioEdicion.value = {}
+  formularioEdicionInicial.value = {}
   motivoEdicion.value = ''
   limpiarFotosSeleccionadas()
 }
@@ -457,36 +520,40 @@ async function reemplazarFoto(tipo) {
 
 function validarEdicion() {
   const form = formularioEdicion.value
-  if (!motivoEdicion.value.trim()) return 'El motivo de edicion es obligatorio.'
+  const classificationError = validateActivationEdit(form, motivoEdicion.value, activacionSeleccionada.value)
+  if (classificationError) return classificationError
   if (form.email_cliente && !isValidEmail(normalizeEmail(form.email_cliente))) return 'Ingresa un correo valido.'
   if (form.telefono_cliente && !/^\+?[0-9\s()\-]{6,20}$/.test(form.telefono_cliente.trim())) return 'Ingresa un telefono valido.'
   if (form.es_plaza_temporal && !form.plaza_temporal.trim()) return 'La plaza temporal es obligatoria.'
-  if (normalizeText(form.rubro_comercio) === 'otro' && !form.rubro_comercio_otro.trim()) return 'Especifica el otro rubro comercial.'
-  if (form.tipo_tienda && !['Pequeña', 'Mediana', 'Grande'].includes(form.tipo_tienda)) return 'Selecciona un tamaño de tienda valido.'
+  if (form.hubo_error && !form.tipo_error) return 'Selecciona el tipo de error.'
+  if (form.hubo_error && form.tipo_error === 'Otro' && !form.descripcion_error.trim()) return 'Describe el error.'
   return null
 }
 
 function construirCambiosEdicion() {
-  const form = formularioEdicion.value
+  const form = normalizeActivationClassification(formularioEdicion.value, activacionSeleccionada.value)
+  const initial = normalizeActivationClassification(formularioEdicionInicial.value, activacionSeleccionada.value)
   const changes = {
     [nombreEditableKey.value]: form.nombre,
     telefono_cliente: form.telefono_cliente,
     email_cliente: form.email_cliente,
     [plazaEditableKey.value]: form.plaza,
-    tipo_activacion: form.tipo_activacion,
-    observaciones: form.observaciones,
     tipo_error: form.tipo_error,
     descripcion_error: form.descripcion_error,
     es_plaza_temporal: form.es_plaza_temporal,
     plaza_temporal: form.es_plaza_temporal ? form.plaza_temporal : null,
   }
-  if (resultadoEditableKey.value) changes[resultadoEditableKey.value] = form.resultado
-  if (esActivacionComercio.value) {
-    changes.rubro_comercio = form.rubro_comercio
-    changes.rubro_comercio_otro = normalizeText(form.rubro_comercio) === 'otro' ? form.rubro_comercio_otro : null
-    changes.comercio_fuera_mercado = form.comercio_fuera_mercado
-    changes.tipo_tienda = esTiendaBarrio.value ? form.tipo_tienda : null
+  const classificationFields = [
+    'tipo_activacion', 'tamano_tienda', 'tipo_tienda', 'tipo_comercio',
+    'rubro_comercio', 'rubro_comercio_otro', 'comercio_fuera_mercado',
+  ]
+  if (form.tipo_grupo !== initial.tipo_grupo || classificationFields.some((key) => form[key] !== initial[key])) {
+    classificationFields.forEach((key) => { changes[key] = form[key] })
   }
+  for (const key of ['descargo_app', 'registro', 'cash_in', 'cash_out', 'p2p', 'qr_fisico', 'respaldo', 'hubo_error']) {
+    if (form[key] !== initial[key]) changes[key] = form[key]
+  }
+  if (resultadoEditableKey.value) changes[resultadoEditableKey.value] = form.resultado
   return changes
 }
 
@@ -502,12 +569,17 @@ async function guardarEdicion() {
   try {
     const result = await requestAdmin(`/admin/activaciones/${encodeURIComponent(activationId)}`, {
       method: 'PATCH',
-      body: { changes: construirCambiosEdicion(), motivoEdicion: motivoEdicion.value.trim() },
+      body: {
+        changes: construirCambiosEdicion(),
+        motivoEdicion: motivoEdicion.value.trim(),
+        categoriaActivacion: formularioEdicion.value.tipo_grupo,
+      },
     })
     activacionSeleccionada.value = result.activation
     emit('activacion-actualizada', { activation: result.activation })
     editandoActivacion.value = false
     formularioEdicion.value = {}
+    formularioEdicionInicial.value = {}
     motivoEdicion.value = ''
     notifySuccess('Activacion actualizada correctamente.')
   } catch (error) { notifyError(getErrorMessage(error)) }
@@ -637,6 +709,8 @@ const columnasExportacion = [
   ['Latitud', (row) => row.latitud],
   ['Longitud', (row) => row.longitud],
   ['Usuario ID', (row) => row.usuario_id],
+  ['Creditos', (row) => (row.creditos ? 'Si' : 'No')],
+  ['Remesas', (row) => (row.remesas ? 'Si' : 'No')],
 ]
 
 const checklistExcel = [
@@ -679,6 +753,8 @@ const columnasExcelPersonalizado = [
   ['Hubo Error', (row) => valorBooleano(row.hubo_error)],
   ['Tipo de Error', (row) => row.tipo_error],
   ['Descripción del Error', (row) => row.descripcion_error],
+  ['Créditos', (row) => (row.creditos ? 'Si' : 'No')],
+  ['Remesas', (row) => (row.remesas ? 'Si' : 'No')],
 ]
 
 function exportarACsv() {
@@ -942,24 +1018,27 @@ async function descargarExcelPersonalizado() {
                   <input v-model="formularioEdicion.plaza" class="input-texto">
                 </template>
               </label>
-              <label><span class="field-label">Tipo de activacion</span><input v-model="formularioEdicion.tipo_activacion" class="input-texto"></label>
+              <label><span class="field-label">Categoría</span><select :value="formularioEdicion.tipo_grupo" class="input-texto" @change="cambiarCategoria"><option value="">Selecciona categoría</option><option v-for="categoria in ACTIVATION_CATEGORIES" :key="categoria.key" :value="categoria.key">{{ categoria.label }}</option></select></label>
+              <label><span class="field-label">Tipo de activacion</span><select :value="formularioEdicion.tipo_activacion" class="input-texto" :disabled="!formularioEdicion.tipo_grupo" @change="cambiarTipoActivacion"><option value="">Selecciona tipo</option><option v-if="formularioEdicion.tipo_activacion && !tiposActivacionDisponibles.some((item) => item.key === formularioEdicion.tipo_activacion)" :value="formularioEdicion.tipo_activacion">Histórico: {{ formularioEdicion.tipo_activacion }}</option><option v-for="tipo in tiposActivacionDisponibles" :key="tipo.key" :value="tipo.key">{{ tipo.label }}</option></select></label>
+              <label v-if="esTiendaBarrio"><span class="field-label">Tamaño de tienda</span><select v-model="formularioEdicion.tamano_tienda" class="input-texto"><option value="">Selecciona tamaño</option><option v-if="formularioEdicion.tamano_tienda && !STORE_SIZES.includes(formularioEdicion.tamano_tienda)" :value="formularioEdicion.tamano_tienda">Histórico: {{ formularioEdicion.tamano_tienda }}</option><option v-for="tamano in STORE_SIZES" :key="tamano" :value="tamano">{{ tamano }}</option></select></label>
               <label v-if="resultadoEditableKey"><span class="field-label">Resultado o estado</span><input v-model="formularioEdicion.resultado" class="input-texto"></label>
-              <label class="edicion-field-wide"><span class="field-label">Observaciones</span><textarea v-model="formularioEdicion.observaciones" class="input-texto" rows="3"></textarea></label>
               <template v-if="esActivacionComercio">
-                <label><span class="field-label">Rubro del comercio</span><input v-model="formularioEdicion.rubro_comercio" class="input-texto"></label>
-                <label v-if="normalizeText(formularioEdicion.rubro_comercio) === 'otro'"><span class="field-label">Otro rubro</span><input v-model="formularioEdicion.rubro_comercio_otro" class="input-texto"></label>
-                <label><span class="field-label">Comercio fuera de mercado</span><select v-model="formularioEdicion.comercio_fuera_mercado" class="input-texto"><option :value="false">No</option><option :value="true">Si</option></select></label>
-                <label v-if="esTiendaBarrio"><span class="field-label">Tipo de tienda</span><select v-model="formularioEdicion.tipo_tienda" class="input-texto"><option value="">Sin especificar</option><option>Pequeña</option><option>Mediana</option><option>Grande</option></select></label>
+                <label><span class="field-label">Rubro del comercio</span><select v-model="formularioEdicion.rubro_comercio" class="input-texto"><option value="">Selecciona rubro</option><option v-if="formularioEdicion.rubro_comercio && !COMMERCE_CATEGORIES.includes(formularioEdicion.rubro_comercio)" :value="formularioEdicion.rubro_comercio">Histórico: {{ formularioEdicion.rubro_comercio }}</option><option v-for="rubro in COMMERCE_CATEGORIES" :key="rubro" :value="rubro">{{ rubro }}</option></select></label>
+                <label v-if="formularioEdicion.rubro_comercio === 'Otro'"><span class="field-label">Otro rubro</span><input v-model="formularioEdicion.rubro_comercio_otro" class="input-texto"></label>
+                <label><span class="field-label">Comercio fuera de mercado</span><select v-model="formularioEdicion.comercio_fuera_mercado" class="input-texto"><option :value="null">Selecciona</option><option :value="false">No</option><option :value="true">Si</option></select></label>
               </template>
-              <label><span class="field-label">Tipo de error</span><input v-model="formularioEdicion.tipo_error" class="input-texto"></label>
-              <label class="edicion-field-wide"><span class="field-label">Descripcion del error</span><textarea v-model="formularioEdicion.descripcion_error" class="input-texto" rows="3"></textarea></label>
+              <label v-for="campo in [{ key: 'descargo_app', label: 'Descargó la app' }, { key: 'registro', label: 'Registro' }, { key: 'cash_in', label: 'Cash-In' }, { key: 'cash_out', label: 'Cash-Out' }, { key: 'p2p', label: 'P2P' }, { key: 'qr_fisico', label: 'QR físico' }, { key: 'respaldo', label: 'Respaldo' }]" :key="campo.key"><span class="field-label">{{ campo.label }}</span><select v-model="formularioEdicion[campo.key]" class="input-texto"><option :value="false">No</option><option :value="true">Sí</option></select></label>
+              <label><span class="field-label">Hubo error</span><select v-model="formularioEdicion.hubo_error" class="input-texto"><option :value="false">No</option><option :value="true">Sí</option></select></label>
+              <label v-if="formularioEdicion.hubo_error"><span class="field-label">Tipo de error</span><select v-model="formularioEdicion.tipo_error" class="input-texto"><option value="">Selecciona tipo</option><option v-if="formularioEdicion.tipo_error && !ACTIVATION_ERROR_TYPES.includes(formularioEdicion.tipo_error)" :value="formularioEdicion.tipo_error">Histórico: {{ formularioEdicion.tipo_error }}</option><option v-for="tipoError in ACTIVATION_ERROR_TYPES" :key="tipoError" :value="tipoError">{{ tipoError }}</option></select></label>
+              <label v-if="formularioEdicion.hubo_error && formularioEdicion.tipo_error === 'Otro'" class="edicion-field-wide"><span class="field-label">Descripcion del error</span><textarea v-model="formularioEdicion.descripcion_error" class="input-texto" rows="3"></textarea></label>
               <label v-if="canAdminister"><span class="field-label">Evidencia principal</span><input ref="inputFotoPrincipal" type="file" accept="image/jpeg,image/png,image/webp" class="input-texto" @change="seleccionarFoto('principal', $event)"><button type="button" class="boton boton-editar" :disabled="!fotoPrincipalArchivo" @click="reemplazarFoto('principal')">{{ reemplazandoFoto === 'principal' ? 'Reemplazando...' : 'Reemplazar evidencia' }}</button></label>
               <label v-if="canAdminister"><span class="field-label">Evidencia Cash-In</span><input ref="inputFotoCashIn" type="file" accept="image/jpeg,image/png,image/webp" class="input-texto" @change="seleccionarFoto('cash-in', $event)"><button type="button" class="boton boton-editar" :disabled="!fotoCashInArchivo" @click="reemplazarFoto('cash-in')">{{ reemplazandoFoto === 'cash-in' ? 'Reemplazando...' : 'Reemplazar Cash-In' }}</button></label>
               <label><span class="field-label">Es plaza temporal</span><select v-model="formularioEdicion.es_plaza_temporal" class="input-texto"><option :value="false">No</option><option :value="true">Si</option></select></label>
               <label v-if="formularioEdicion.es_plaza_temporal"><span class="field-label">Plaza temporal</span><input v-model="formularioEdicion.plaza_temporal" class="input-texto"></label>
               <label class="edicion-field-wide"><span class="field-label">Motivo de edicion</span><textarea v-model="motivoEdicion" class="input-texto" rows="3" placeholder="Obligatorio"></textarea></label>
+              <p v-if="motivoEdicionFaltante" class="inline-warning edicion-field-wide">Guardar se habilitará cuando ingreses el motivo de edición.</p>
             </fieldset>
-            <div class="confirm-actions"><button type="button" class="boton boton-cancelar" :disabled="guardandoEdicion" @click="cancelarEdicion">Cancelar</button><button type="submit" class="boton boton-guardar" :disabled="guardandoEdicion || !motivoEdicion.trim()">{{ guardandoEdicion ? 'Guardando...' : 'Guardar cambios' }}</button></div>
+            <div class="confirm-actions"><button type="button" class="boton boton-cancelar" :disabled="guardandoEdicion" @click="cancelarEdicion">Cancelar</button><button type="submit" class="boton boton-guardar" :disabled="guardandoEdicion || motivoEdicionFaltante" :title="motivoEdicionFaltante ? 'Ingresa el motivo de edición para guardar.' : ''">{{ guardandoEdicion ? 'Guardando...' : 'Guardar cambios' }}</button></div>
           </form>
           <div v-else class="detalle-body">
             <section v-for="section in seccionesDetalle" :key="section.title" class="detalle-section">

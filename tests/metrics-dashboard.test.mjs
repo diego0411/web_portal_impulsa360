@@ -97,6 +97,34 @@ test('no agrega registros desde el catálogo; conserva alcance global y UUID con
   await assertCount(admin, 6)
 })
 
+test('ranking general incluye solo activadores activos del catálogo, deduplicados y con cero', async () => {
+  const cero = '20000000-0000-0000-0000-000000000003'
+  const multirrol = '20000000-0000-0000-0000-000000000004'
+  const catalog = [
+    { ...users[0], nombre: 'Zulma', estado: 'activo' },
+    { ...users[0], usuario_id: cero, nombre: 'Ana', estado: 'activo' },
+    { ...users[0], usuario_id: cero, nombre: 'Ana', estado: 'activo' },
+    { ...users[0], usuario_id: multirrol, nombre: 'Berta', estado: 'activo', rol: 'lider', roles: ['lider', 'activador'] },
+    { ...users[0], usuario_id: otro, nombre: 'Inactivo', estado: 'inactivo' },
+    { ...users[0], usuario_id: 'solo-lider', nombre: 'Líder', estado: 'activo', rol: 'lider' },
+    { ...users[0], usuario_id: 'solo-admin', nombre: 'Admin', estado: 'activo', rol: 'administrador' },
+  ]
+  const vm = await mount(rows, catalog)
+  assert.deepEqual(vm.dashboard.value.topActivadores.map((item) => [item.key, item.value]), [
+    [`uid:${activador}`, 5], [`uid:${cero}`, 0], [`uid:${multirrol}`, 0],
+  ])
+  assert.equal(vm.opciones.value.activadores.filter((item) => item.key === `uid:${cero}`).length, 1)
+  vm.filtroActivador.value = `uid:${cero}`
+  await assertCount(vm, 0)
+  assert.deepEqual(vm.dashboard.value.topActivadores.map((item) => [item.label, item.value]), [['Ana', 0]])
+  vm.filtroActivador.value = ''
+  vm.filtroDesde.value = '2027-01-01'
+  vm.filtroPlaza.value = 'pkey:oruro'
+  vm.filtroTipo.value = 'otro'
+  await assertCount(vm, 0)
+  assert.deepEqual(vm.dashboard.value.topActivadores.map((item) => item.label), ['Ana', 'Berta', 'Zulma'])
+})
+
 test('un fallo del catálogo no publica métricas de líder incompletas', async () => {
   const vm = await mount(rows, users, true)
   assert.ok(vm.errorMsg.value)
@@ -157,7 +185,7 @@ test('equipo combina integrantes autorizados con 0, 1 y varias activaciones sin 
     ...catalog[0], usuario_id: `60000000-0000-0000-0000-${String(i).padStart(12, '0')}`, nombre: 'Homónimo',
   })))
   assert.ok(emptyTeam.opciones.value.equipos.some((e) => e.key === `id:${equipo}`))
-  assert.equal(emptyTeam.dashboard.value.topActivadores.length, 0)
+  assert.equal(emptyTeam.dashboard.value.topActivadores.length, 11)
   emptyTeam.filtroEquipo.value = `id:${equipo}`
   await assertCount(emptyTeam, 0)
   assert.equal(emptyTeam.dashboard.value.topActivadores.length, 11)
@@ -165,4 +193,34 @@ test('equipo combina integrantes autorizados con 0, 1 y varias activaciones sin 
   assert.equal(emptyTeam.rankingPaginado.value.length, 10)
   emptyTeam.rankingSiguiente()
   assert.equal(emptyTeam.rankingPaginado.value.length, 1)
+})
+
+test('reconoce Cliente antiguo como categoría sin alterar los tipos existentes', async () => {
+  const clienteAntiguo = {
+    ...rows[3], id: '90000000-0000-0000-0000-000000000001',
+    tipo_activacion: 'cliente_antiguo', base_activacion: 'cliente_antiguo',
+  }
+  const data = [
+    ...rows.slice(0, 3),
+    clienteAntiguo,
+    { ...rows[4], id: '90000000-0000-0000-0000-000000000002', tipo_activacion: 'transeunte' },
+  ]
+  const vm = await mount(data)
+  await assertCount(vm, 5)
+
+  const clasificacion = Object.fromEntries(vm.dashboard.value.porClasificacion.map((i) => [i.label, i.value]))
+  assert.equal(clasificacion['Cliente antiguo'], 1)
+  assert.equal(clasificacion.Comercio, 3)
+  assert.equal(vm.dashboard.value.kpis.tiendas, 0)
+
+  const tipos = Object.fromEntries(vm.dashboard.value.porTipo.map((i) => [i.label, i.value]))
+  assert.deepEqual(tipos, { comercio: 3, 'Cliente antiguo': 1, transeunte: 1 })
+  assert.ok(vm.opciones.value.tipos.some((t) => t.key === 'cliente_antiguo' && t.nombre === 'Cliente antiguo'))
+
+  vm.filtroTipo.value = 'cliente_antiguo'
+  await assertCount(vm, 1)
+  vm.filtroTipo.value = 'no-existe'
+  await assertCount(vm, 0)
+  vm.filtroTipo.value = ''
+  await assertCount(vm, 5)
 })

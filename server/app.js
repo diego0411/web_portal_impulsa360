@@ -2,6 +2,11 @@ import crypto from 'node:crypto'
 import express from 'express'
 import { createClient } from '@supabase/supabase-js'
 import { generateActivacionesExcel } from './activacionesExcel.js'
+import {
+  activationClassificationUpdate,
+  normalizeActivationClassification,
+  validateActivationClassification,
+} from '../src/lib/activationEditing.js'
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const ACTIVATION_EDITABLE_FIELDS = new Set([
@@ -16,13 +21,22 @@ const ACTIVATION_EDITABLE_FIELDS = new Set([
   'tipo_activacion',
   'resultado',
   'estado',
-  'observaciones',
   'tipo_tienda',
+  'tamano_tienda',
+  'tipo_comercio',
   'rubro_comercio',
   'rubro_comercio_otro',
   'comercio_fuera_mercado',
   'tipo_error',
   'descripcion_error',
+  'descargo_app',
+  'registro',
+  'cash_in',
+  'cash_out',
+  'p2p',
+  'qr_fisico',
+  'respaldo',
+  'hubo_error',
   'es_plaza_temporal',
   'plaza_temporal',
 ])
@@ -2589,9 +2603,10 @@ export function createAdminApiApp({ env = process.env } = {}) {
     asyncRoute(async (req, res) => {
       const activacionId = normalizeText(req.params?.activacionId)
       const editReason = normalizeText(req.body?.motivoEdicion)
+      const activationCategory = normalizeText(req.body?.categoriaActivacion)
       const changes = req.body?.changes
       const unexpectedBodyFields = Object.keys(req.body ?? {}).filter(
-        (key) => !['changes', 'motivoEdicion'].includes(key)
+        (key) => !['changes', 'motivoEdicion', 'categoriaActivacion'].includes(key)
       )
 
       if (!activacionId) {
@@ -2624,12 +2639,16 @@ export function createAdminApiApp({ env = process.env } = {}) {
 
       const updatePayload = {}
       for (const key of changeKeys) {
-        if (['comercio_fuera_mercado', 'es_plaza_temporal'].includes(key)) {
-          if (typeof changes[key] !== 'boolean') {
+        if (['comercio_fuera_mercado', 'es_plaza_temporal', 'descargo_app', 'registro', 'cash_in',
+          'cash_out', 'p2p', 'qr_fisico', 'respaldo', 'hubo_error'].includes(key)) {
+          if (key === 'comercio_fuera_mercado' && changes[key] === null) {
+            updatePayload[key] = null
+          } else if (typeof changes[key] !== 'boolean') {
             jsonError(res, 400, `${key} debe ser booleano.`)
             return
+          } else {
+            updatePayload[key] = changes[key]
           }
-          updatePayload[key] = changes[key]
         } else {
           updatePayload[key] = normalizeNullableText(changes[key])
         }
@@ -2643,8 +2662,8 @@ export function createAdminApiApp({ env = process.env } = {}) {
         jsonError(res, 400, 'El telefono no tiene un formato valido.')
         return
       }
-      if (updatePayload.tipo_tienda && !ALLOWED_STORE_SIZES.has(updatePayload.tipo_tienda)) {
-        jsonError(res, 400, 'tipo_tienda debe ser Pequeña, Mediana o Grande.')
+      if (updatePayload.tamano_tienda && !ALLOWED_STORE_SIZES.has(updatePayload.tamano_tienda)) {
+        jsonError(res, 400, 'tamano_tienda debe ser Pequeña, Mediana o Grande.')
         return
       }
 
@@ -2660,6 +2679,24 @@ export function createAdminApiApp({ env = process.env } = {}) {
       if (!existingRow?.id) {
         jsonError(res, 404, 'No se encontro la activacion indicada.')
         return
+      }
+
+      const classificationKeys = new Set([
+        'tipo_activacion', 'tamano_tienda', 'tipo_tienda', 'tipo_comercio',
+        'rubro_comercio', 'rubro_comercio_otro', 'comercio_fuera_mercado',
+      ])
+      if (changeKeys.some((key) => classificationKeys.has(key))) {
+        const normalizedClassification = normalizeActivationClassification({
+          ...existingRow,
+          ...updatePayload,
+          tipo_grupo: activationCategory,
+        }, existingRow)
+        const classificationError = validateActivationClassification(normalizedClassification, existingRow)
+        if (classificationError) {
+          jsonError(res, 400, classificationError)
+          return
+        }
+        Object.assign(updatePayload, activationClassificationUpdate(normalizedClassification))
       }
 
       const actualUpdatePayload = Object.fromEntries(
@@ -2682,6 +2719,15 @@ export function createAdminApiApp({ env = process.env } = {}) {
       if (normalizeText(mergedRow.rubro_comercio).toLowerCase() === 'otro' &&
         !normalizeText(mergedRow.rubro_comercio_otro)) {
         jsonError(res, 400, 'rubro_comercio_otro es obligatorio cuando el rubro es Otro.')
+        return
+      }
+      if (mergedRow.hubo_error === true && !normalizeText(mergedRow.tipo_error)) {
+        jsonError(res, 400, 'tipo_error es obligatorio cuando hubo_error es verdadero.')
+        return
+      }
+      if (mergedRow.hubo_error === true && normalizeText(mergedRow.tipo_error) === 'Otro' &&
+        !normalizeText(mergedRow.descripcion_error)) {
+        jsonError(res, 400, 'descripcion_error es obligatoria cuando tipo_error es Otro.')
         return
       }
 

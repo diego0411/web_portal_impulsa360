@@ -28,6 +28,11 @@ function rolesCatalogo(usuario) {
   if (Array.isArray(usuario?.roles)) return usuario.roles.map((rol) => String(rol ?? '').trim().toLowerCase())
   return [String(usuario?.rol ?? '').trim().toLowerCase()]
 }
+const activadoresOperativos = computed(() => [...usuariosPorId.value.values()].filter((usuario) => {
+  const id = texto(usuario.usuario_id)
+  const estado = normalizado(usuario.estado || 'activo')
+  return Boolean(id) && estado === 'activo' && rolesCatalogo(usuario).includes('activador')
+}))
 const catalogoLideres = computed(() => {
   const lideres = new Map()
   for (const usuario of usuariosCatalogo.value) {
@@ -160,7 +165,8 @@ const activadorCatalogo = computed(() => {
 // La etiqueta conserva el texto original (primer visto).
 function tipoKey(item) { return normalizado(texto(item.tipo_activacion)) || 'none' }
 // Catálogo funcional de tipos con valor técnico CONFIRMADO en código
-// (comparación exacta en validar_elegibilidad_reactivacion). Los demás tipos del
+// (reimpresion_qr por validar_elegibilidad_reactivacion; cliente_antiguo por
+// tipo_activacion/base_activacion='cliente_antiguo'). Los demás tipos del
 // catálogo funcional (Comercio, Reactivación*, Transeúnte, Limbo, No habilitado,
 // Configuración de cuenta) no tienen valor técnico exacto confirmable en el
 // código disponible (solo prefijos/subcadenas o ninguna mención) y NO se inventan:
@@ -169,6 +175,7 @@ function tipoKey(item) { return normalizado(texto(item.tipo_activacion)) || 'non
 // combinado (clasificacionRegistro / es*Row), por eso el catálogo es plano.
 const TIPOS_FUNCIONALES = [
   { tecnico: 'reimpresion_qr', nombre: 'Reimpresión QR' },
+  { tecnico: 'cliente_antiguo', nombre: 'Cliente antiguo' },
 ]
 function equipoIdTexto(item) { return texto(item.equipo_id_registro).toLowerCase() }
 function equipoNumeroTexto(item) {
@@ -237,13 +244,19 @@ function comercioRegistro(item) { return texto(item.nombre_comercio) || texto(it
 // Solo integrantes del catálogo autorizado; la pertenencia es actual y por UUID.
 const integrantesEquipo = computed(() => {
   if (!filtroEquipo.value) return []
-  return [...usuariosPorId.value.values()].filter((usuario) => {
+  return activadoresOperativos.value.filter((usuario) => {
     const equipoId = texto(usuario.equipo_id).toLowerCase()
-    if (!equipoId || !texto(usuario.usuario_id) || !rolesCatalogo(usuario).includes('activador')) return false
+    if (!equipoId) return false
     if (`id:${equipoId}` !== filtroEquipo.value) return false
     return !filtroLider.value || liderKey(usuario) === filtroLider.value
   })
 })
+const integrantesRanking = computed(() => (filtroEquipo.value ? integrantesEquipo.value : activadoresOperativos.value).filter((usuario) => {
+  const key = activadorKey(usuario)
+  if (filtroActivador.value && key !== filtroActivador.value) return false
+  if (filtroLider.value && liderKey(usuario) !== filtroLider.value) return false
+  return true
+}))
 function formatNumber(value) { return numberFormatter.format(Number(value) || 0) }
 function formatDecimal(value) { return numberFormatter.format(Number(value.toFixed(1)) || 0) }
 function formatDate(value) { const [year, month, day] = String(value || '').split('-'); return year && month && day ? `${day}/${month}/${year}` : 'Sin fecha' }
@@ -262,6 +275,7 @@ function sumar(map, key) { const label = texto(key) || 'Sin especificar'; map.se
 function ranking(map, limit = Infinity) { return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'es')).slice(0, limit).map(([label, value]) => ({ label, value })) }
 function clasificacionRegistro(item) {
   const value = `${normalizado(item.tipo_activacion)} ${normalizado(item.tipo_comercio)} ${normalizado(item.tipo_tienda)}`
+  if (value.includes('cliente_antiguo') || value.includes('cliente antiguo')) return 'Cliente antiguo'
   if (value.includes('mercado')) return 'Mercado'
   if (value.includes('barrio') || value.includes('tienda')) return 'Barrio'
   if (value.includes('comercio')) return 'Comercio'
@@ -284,13 +298,13 @@ const opciones = computed(() => {
     if (!equipos.has(key)) equipos.set(key, { key, nombre: equipoEtiqueta(item, key) })
   }
   // Hace seleccionables también los equipos e integrantes sin registros.
-  for (const usuario of usuariosPorId.value.values()) {
+  for (const usuario of activadoresOperativos.value) {
     const id = texto(usuario.equipo_id).toLowerCase()
-    if (!id || !rolesCatalogo(usuario).includes('activador')) continue
+    if (!id) continue
     const key = `id:${id}`
     if (!equipos.has(key)) equipos.set(key, { key, nombre: equipoEtiqueta({ equipo_id_registro: id, equipo_numero_registro: usuario.equipo_numero, equipo_nombre_registro: usuario.equipo_nombre }, key) })
   }
-  for (const usuario of integrantesEquipo.value) {
+  for (const usuario of activadoresOperativos.value) {
     const key = activadorKey(usuario)
     if (!activadores.has(key)) activadores.set(key, { key, nombre: texto(usuario.nombre) || activadorEtiqueta(usuario, key) })
   }
@@ -299,7 +313,10 @@ const opciones = computed(() => {
   // se conservan; las categorías del catálogo no se fusionan (no son campo).
   for (const funcional of TIPOS_FUNCIONALES) {
     const key = tipoKey({ tipo_activacion: funcional.tecnico })
-    if (key !== 'none' && !tipos.has(key)) tipos.set(key, { key, nombre: funcional.nombre })
+    if (key === 'none') continue
+    const existente = tipos.get(key)
+    if (existente) { existente.nombre = funcional.nombre; continue }
+    tipos.set(key, { key, nombre: funcional.nombre })
   }
   // Unión con el catálogo autorizado: agrega líderes activos sin activaciones y
   // anota el estado de los líderes actuales inhabilitados si el catálogo lo informa.
@@ -405,17 +422,14 @@ const dashboard = computed(() => {
     mensual: maps.mes.size ? kpis.total / maps.mes.size : 0,
   }
   const traducir = (entries, nombres) => entries.map((entry) => ({ key: entry.label, label: nombres.get(entry.label) ?? entry.label, value: entry.value }))
-  let topActivadores = traducir(ranking(maps.activador), nombresActivador)
-  if (filtroEquipo.value) {
-    const porUsuario = new Map(topActivadores.map((item) => [item.key, item]))
-    for (const usuario of integrantesEquipo.value) {
-      const key = activadorKey(usuario)
-      if (filtroActivador.value && filtroActivador.value !== key) continue
-      const existente = porUsuario.get(key)
-      porUsuario.set(key, { key, label: texto(usuario.nombre) || existente?.label || activadorEtiqueta(usuario, key), value: existente?.value ?? 0 })
+  const topActivadores = integrantesRanking.value.map((usuario) => {
+    const key = activadorKey(usuario)
+    return {
+      key,
+      label: texto(usuario.nombre) || nombresActivador.get(key) || activadorEtiqueta(usuario, key),
+      value: maps.activador.get(key) ?? 0,
     }
-    topActivadores = [...porUsuario.values()].sort((a, b) => b.value - a.value || a.label.localeCompare(b.label, 'es') || a.key.localeCompare(b.key))
-  }
+  }).sort((a, b) => b.value - a.value || a.label.localeCompare(b.label, 'es') || a.key.localeCompare(b.key))
   return { rows, points, kpis: { ...kpis, comercios: comerciosUnicos.size }, promedios, activadoresUnicos: activadoresUnicos.size, porEquipo, resumenEquipoMes, porDia: ranking(maps.dia).sort((a, b) => a.label.localeCompare(b.label)), porPlaza: traducir(ranking(maps.plaza), nombresPlaza), topActivadores, porTipo: traducir(ranking(maps.tipo), nombresTipo), porClasificacion: ranking(maps.clasificacion), porErrores: ranking(maps.errores), topLideres: traducir(ranking(maps.lider, 10), nombresLider) }
 })
 

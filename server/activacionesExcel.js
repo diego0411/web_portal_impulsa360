@@ -108,6 +108,7 @@ export async function generateActivacionesExcel({ adminSupabase, bucket, filters
     ['Es Plaza Temporal', 'esPlazaTemporal', 18], ['Plaza Temporal', 'plazaTemporal', 20],
     ['Foto', 'foto', 28], ['Foto Cash-In', 'fotoCashIn', 28],
     ['Latitud', 'latitud', 14], ['Longitud', 'longitud', 14], ['Usuario ID', 'usuarioId', 38],
+    ['Creditos', 'creditos', 12], ['Remesas', 'remesas', 12],
   ].map(([header, key, width]) => ({ header, key, width }))
 
   worksheet.getRow(1).eachCell((cell) => {
@@ -139,6 +140,7 @@ export async function generateActivacionesExcel({ adminSupabase, bucket, filters
     foto: photoHyperlink(evidenceLinks.get(`${row.id}|principal`)),
     fotoCashIn: photoHyperlink(evidenceLinks.get(`${row.id}|cash-in`)),
     latitud: row.latitud, longitud: row.longitud, usuarioId: row.usuario_id,
+    creditos: row.creditos ? 'Si' : 'No', remesas: row.remesas ? 'Si' : 'No',
   })))
 
   for (const key of ['foto', 'fotoCashIn']) {
