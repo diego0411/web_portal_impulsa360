@@ -4,13 +4,18 @@ import { createClient } from '@supabase/supabase-js'
 import { generateActivacionesExcel } from './activacionesExcel.js'
 import {
   activationClassificationUpdate,
+  isCreditosEligible,
+  isRemesasEligible,
   normalizeActivationClassification,
   validateActivationClassification,
+  validateActivationTextLengths,
 } from '../src/lib/activationEditing.js'
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const ACTIVATION_EDITABLE_FIELDS = new Set([
   'nombres_cliente',
+  'apellidos_cliente',
+  'ci_cliente',
   'nombre_comercio',
   'comercio',
   'cliente',
@@ -27,6 +32,7 @@ const ACTIVATION_EDITABLE_FIELDS = new Set([
   'rubro_comercio',
   'rubro_comercio_otro',
   'comercio_fuera_mercado',
+  'observaciones',
   'tipo_error',
   'descripcion_error',
   'descargo_app',
@@ -36,6 +42,8 @@ const ACTIVATION_EDITABLE_FIELDS = new Set([
   'p2p',
   'qr_fisico',
   'respaldo',
+  'creditos',
+  'remesas',
   'hubo_error',
   'es_plaza_temporal',
   'plaza_temporal',
@@ -2640,7 +2648,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       const updatePayload = {}
       for (const key of changeKeys) {
         if (['comercio_fuera_mercado', 'es_plaza_temporal', 'descargo_app', 'registro', 'cash_in',
-          'cash_out', 'p2p', 'qr_fisico', 'respaldo', 'hubo_error'].includes(key)) {
+          'cash_out', 'p2p', 'qr_fisico', 'respaldo', 'creditos', 'remesas', 'hubo_error'].includes(key)) {
           if (key === 'comercio_fuera_mercado' && changes[key] === null) {
             updatePayload[key] = null
           } else if (typeof changes[key] !== 'boolean') {
@@ -2664,6 +2672,11 @@ export function createAdminApiApp({ env = process.env } = {}) {
       }
       if (updatePayload.tamano_tienda && !ALLOWED_STORE_SIZES.has(updatePayload.tamano_tienda)) {
         jsonError(res, 400, 'tamano_tienda debe ser Pequeña, Mediana o Grande.')
+        return
+      }
+      const textLengthError = validateActivationTextLengths(updatePayload)
+      if (textLengthError) {
+        jsonError(res, 400, textLengthError)
         return
       }
 
@@ -2697,6 +2710,20 @@ export function createAdminApiApp({ env = process.env } = {}) {
           return
         }
         Object.assign(updatePayload, activationClassificationUpdate(normalizedClassification))
+      }
+
+      const eligibilityRow = {
+        ...existingRow,
+        ...updatePayload,
+        tipo_grupo: activationCategory || existingRow.tipo_grupo,
+      }
+      if (updatePayload.creditos === true && !isCreditosEligible(eligibilityRow)) {
+        jsonError(res, 400, 'Créditos no aplica al tipo de activación seleccionado.')
+        return
+      }
+      if (updatePayload.remesas === true && !isRemesasEligible(eligibilityRow)) {
+        jsonError(res, 400, 'Remesas no aplica al tipo de activación seleccionado.')
+        return
       }
 
       const actualUpdatePayload = Object.fromEntries(

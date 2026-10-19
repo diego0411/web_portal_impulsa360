@@ -42,6 +42,23 @@ export const COMMERCE_CATEGORIES = [
   'Otro',
 ]
 export const ACTIVATION_ERROR_TYPES = ['Conectividad', 'Aplicación', 'Registro', 'Cash-In', 'Otro']
+export const ACTIVATION_TEXT_LIMITS = {
+  nombres_cliente: 150,
+  apellidos_cliente: 150,
+  ci_cliente: 30,
+}
+
+export function validateActivationTextLengths(values = {}) {
+  for (const [key, max] of Object.entries(ACTIVATION_TEXT_LIMITS)) {
+    const value = values[key]
+    if (value !== null && value !== undefined && String(value).trim().length > max) {
+      const label = key === 'ci_cliente' ? 'La cédula de identidad'
+        : key === 'apellidos_cliente' ? 'Los apellidos' : 'Los nombres'
+      return `${label} no puede superar ${max} caracteres.`
+    }
+  }
+  return null
+}
 
 const normalizeKey = (value) => String(value ?? '')
   .trim()
@@ -82,6 +99,18 @@ export function activationBaseFor(category, activationType) {
 
 export function isGeneralCommerce(category, activationType) {
   return category === 'comercio' && ['comercio', 'reactivacion_comercio'].includes(activationType)
+}
+
+export function isCreditosEligible(values = {}) {
+  const type = normalizeKey(values.tipo_activacion)
+  return type === 'cliente_antiguo' || type === 'reimpresion_qr' || /^reactivacion/.test(type)
+}
+
+export function isRemesasEligible(values = {}) {
+  const category = values.tipo_grupo ?? inferActivationCategory(values)
+  const type = normalizeKey(values.tipo_activacion)
+  return (category === 'comercio' && type === 'comercio') ||
+    (category === 'transeunte' && type === 'transeunte')
 }
 
 export function normalizeActivationClassification(values = {}, original = {}) {
@@ -136,6 +165,15 @@ export function validateActivationClassification(values = {}, original = {}) {
     if (typeof values.comercio_fuera_mercado !== 'boolean' && !preservesHistoricalOutsideMarket) {
       return 'Indica si el comercio está fuera del mercado.'
     }
+  }
+  const typeChanged = category !== originalCategory || activationType !== original.tipo_activacion
+  const creditosBecomesTrue = values.creditos === true && original.creditos !== true
+  if (values.creditos === true && !isCreditosEligible(values) && (creditosBecomesTrue || typeChanged)) {
+    return 'Créditos no aplica al tipo de activación seleccionado.'
+  }
+  const remesasBecomesTrue = values.remesas === true && original.remesas !== true
+  if (values.remesas === true && !isRemesasEligible(values) && (remesasBecomesTrue || typeChanged)) {
+    return 'Remesas no aplica al tipo de activación seleccionado.'
   }
   return null
 }

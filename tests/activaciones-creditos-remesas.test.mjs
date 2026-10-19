@@ -35,7 +35,11 @@ test('el detalle muestra creditos y remesas de forma explícita y sin duplicados
   assert.match(componentSource, /siempreVisibles\.has\(key\) \? row\[key\] === true/)
 })
 
-test('PATCH no permite editar creditos ni remesas', () => {
-  assert.doesNotMatch(editableFields, /['"]creditos['"]|['"]remesas['"]/)
-  assert.doesNotMatch(componentSource, /changes\[['"]creditos['"]\]|changes\[['"]remesas['"]\]/)
+test('PATCH permite editar creditos y remesas como booleanos con elegibilidad', () => {
+  assert.match(editableFields, /['"]creditos['"]/)
+  assert.match(editableFields, /['"]remesas['"]/)
+  assert.match(serverSource, /'creditos', 'remesas'/)
+  assert.match(serverSource, /isCreditosEligible/)
+  assert.match(serverSource, /isRemesasEligible/)
+  assert.match(componentSource, /'creditos', 'remesas'/)
 })

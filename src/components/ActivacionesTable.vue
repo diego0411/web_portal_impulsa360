@@ -21,9 +21,12 @@ import {
   COMMERCE_CATEGORIES,
   STORE_SIZES,
   inferActivationCategory,
+  isCreditosEligible,
   isGeneralCommerce,
+  isRemesasEligible,
   normalizeActivationClassification,
   validateActivationEdit,
+  validateActivationTextLengths,
 } from '../lib/activationEditing'
 
 const props = defineProps({
@@ -369,10 +372,16 @@ function tieneCampo(row, key) {
   return Object.prototype.hasOwnProperty.call(row ?? {}, key)
 }
 
-const nombreEditableKey = computed(() => {
+const nombreComercialKey = computed(() => {
   const row = activacionSeleccionada.value
-  return ['nombre_comercio', 'comercio', 'cliente', 'nombres_cliente'].find((key) => tieneCampo(row, key)) ?? 'nombres_cliente'
+  const columns = ['nombre_comercio', 'comercio', 'cliente']
+  return columns.find((key) => tieneValor(row?.[key])) ??
+    columns.find((key) => tieneCampo(row, key)) ?? null
 })
+const esCategoriaPersona = computed(() => ['transeunte', 'cliente_antiguo'].includes(formularioEdicion.value.tipo_grupo))
+const nombresVisible = computed(() => esCategoriaPersona.value || tieneValor(activacionSeleccionada.value?.nombres_cliente))
+const nombreComercialVisible = computed(() => Boolean(nombreComercialKey.value) &&
+  (!esCategoriaPersona.value || tieneValor(activacionSeleccionada.value?.[nombreComercialKey.value])))
 const plazaEditableKey = computed(() => tieneCampo(activacionSeleccionada.value, 'ciudad_activacion') ? 'ciudad_activacion' : 'plaza')
 const resultadoEditableKey = computed(() => ['resultado', 'estado'].find((key) => tieneCampo(activacionSeleccionada.value, key)) ?? null)
 const tiposActivacionDisponibles = computed(() => ACTIVATION_TYPES_BY_CATEGORY[formularioEdicion.value.tipo_grupo] ?? [])
@@ -381,13 +390,18 @@ const esActivacionComercio = computed(() => isGeneralCommerce(
   formularioEdicion.value.tipo_activacion,
 ))
 const esTiendaBarrio = computed(() => formularioEdicion.value.tipo_grupo === 'tienda_barrio')
+const mostrarCreditos = computed(() => isCreditosEligible(formularioEdicion.value) || formularioEdicion.value.creditos === true)
+const mostrarRemesas = computed(() => isRemesasEligible(formularioEdicion.value) || formularioEdicion.value.remesas === true)
 const motivoEdicionFaltante = computed(() => !motivoEdicion.value.trim())
 
 function iniciarEdicion() {
   const row = activacionSeleccionada.value
   if (!row) return
   formularioEdicion.value = {
-    nombre: row[nombreEditableKey.value] ?? '',
+    nombre_comercial: nombreComercialKey.value ? row[nombreComercialKey.value] ?? '' : '',
+    nombres_cliente: row.nombres_cliente ?? '',
+    apellidos_cliente: row.apellidos_cliente ?? '',
+    ci_cliente: row.ci_cliente ?? '',
     telefono_cliente: row.telefono_cliente ?? '',
     email_cliente: row.email_cliente ?? '',
     plaza: row[plazaEditableKey.value] ?? '',
@@ -400,8 +414,11 @@ function iniciarEdicion() {
     rubro_comercio: row.rubro_comercio ?? '',
     rubro_comercio_otro: row.rubro_comercio_otro ?? '',
     comercio_fuera_mercado: typeof row.comercio_fuera_mercado === 'boolean' ? row.comercio_fuera_mercado : null,
+    observaciones: row.observaciones ?? '',
     tipo_error: row.tipo_error ?? '',
     descripcion_error: row.descripcion_error ?? '',
+    creditos: row.creditos === true,
+    remesas: row.remesas === true,
     descargo_app: row.descargo_app === true,
     registro: row.registro === true,
     cash_in: row.cash_in === true,
@@ -522,6 +539,8 @@ function validarEdicion() {
   const form = formularioEdicion.value
   const classificationError = validateActivationEdit(form, motivoEdicion.value, activacionSeleccionada.value)
   if (classificationError) return classificationError
+  const textLengthError = validateActivationTextLengths(form)
+  if (textLengthError) return textLengthError
   if (form.email_cliente && !isValidEmail(normalizeEmail(form.email_cliente))) return 'Ingresa un correo valido.'
   if (form.telefono_cliente && !/^\+?[0-9\s()\-]{6,20}$/.test(form.telefono_cliente.trim())) return 'Ingresa un telefono valido.'
   if (form.es_plaza_temporal && !form.plaza_temporal.trim()) return 'La plaza temporal es obligatoria.'
@@ -533,15 +552,27 @@ function validarEdicion() {
 function construirCambiosEdicion() {
   const form = normalizeActivationClassification(formularioEdicion.value, activacionSeleccionada.value)
   const initial = normalizeActivationClassification(formularioEdicionInicial.value, activacionSeleccionada.value)
-  const changes = {
-    [nombreEditableKey.value]: form.nombre,
-    telefono_cliente: form.telefono_cliente,
-    email_cliente: form.email_cliente,
-    [plazaEditableKey.value]: form.plaza,
-    tipo_error: form.tipo_error,
-    descripcion_error: form.descripcion_error,
-    es_plaza_temporal: form.es_plaza_temporal,
-    plaza_temporal: form.es_plaza_temporal ? form.plaza_temporal : null,
+  const sizeChanged = form.tamano_tienda !== initial.tamano_tienda
+  if (form.tipo_grupo === 'tienda_barrio' && sizeChanged) form.tipo_tienda = form.tamano_tienda
+  const changes = {}
+  const setIfChanged = (key, value) => {
+    if (value !== initial[key]) changes[key] = value
+  }
+  if (nombreComercialKey.value) setIfChanged(nombreComercialKey.value, form.nombre_comercial)
+  setIfChanged('nombres_cliente', form.nombres_cliente)
+  setIfChanged('apellidos_cliente', form.apellidos_cliente)
+  setIfChanged('ci_cliente', form.ci_cliente)
+  setIfChanged('telefono_cliente', form.telefono_cliente)
+  setIfChanged('email_cliente', form.email_cliente)
+  setIfChanged(plazaEditableKey.value, form.plaza)
+  setIfChanged('observaciones', form.observaciones)
+  setIfChanged('tipo_error', form.tipo_error)
+  setIfChanged('descripcion_error', form.descripcion_error)
+  const plazaTemporal = form.es_plaza_temporal ? form.plaza_temporal : null
+  const initialPlazaTemporal = initial.es_plaza_temporal ? initial.plaza_temporal : null
+  if (form.es_plaza_temporal !== initial.es_plaza_temporal || plazaTemporal !== initialPlazaTemporal) {
+    changes.es_plaza_temporal = form.es_plaza_temporal
+    changes.plaza_temporal = plazaTemporal
   }
   const classificationFields = [
     'tipo_activacion', 'tamano_tienda', 'tipo_tienda', 'tipo_comercio',
@@ -549,11 +580,15 @@ function construirCambiosEdicion() {
   ]
   if (form.tipo_grupo !== initial.tipo_grupo || classificationFields.some((key) => form[key] !== initial[key])) {
     classificationFields.forEach((key) => { changes[key] = form[key] })
+    if (!sizeChanged) {
+      delete changes.tipo_tienda
+      delete changes.tamano_tienda
+    }
   }
-  for (const key of ['descargo_app', 'registro', 'cash_in', 'cash_out', 'p2p', 'qr_fisico', 'respaldo', 'hubo_error']) {
+  for (const key of ['descargo_app', 'registro', 'cash_in', 'cash_out', 'p2p', 'qr_fisico', 'respaldo', 'creditos', 'remesas', 'hubo_error']) {
     if (form[key] !== initial[key]) changes[key] = form[key]
   }
-  if (resultadoEditableKey.value) changes[resultadoEditableKey.value] = form.resultado
+  if (resultadoEditableKey.value) setIfChanged(resultadoEditableKey.value, form.resultado)
   return changes
 }
 
@@ -1007,7 +1042,10 @@ async function descargarExcelPersonalizado() {
           </header>
           <form v-if="editandoActivacion" class="detalle-body" @submit.prevent="guardarEdicion">
             <fieldset class="edicion-activacion" :disabled="guardandoEdicion || Boolean(reemplazandoFoto)">
-              <label><span class="field-label">Nombre del cliente o comercio</span><input v-model="formularioEdicion.nombre" class="input-texto"></label>
+              <label v-if="nombreComercialVisible"><span class="field-label">Nombre del cliente o comercio</span><input v-model="formularioEdicion.nombre_comercial" class="input-texto"></label>
+              <label v-if="nombresVisible"><span class="field-label">Nombres</span><input v-model="formularioEdicion.nombres_cliente" class="input-texto"></label>
+              <label v-if="nombresVisible"><span class="field-label">Apellidos</span><input v-model="formularioEdicion.apellidos_cliente" class="input-texto"></label>
+              <label v-if="nombresVisible"><span class="field-label">Cédula de identidad</span><input v-model="formularioEdicion.ci_cliente" class="input-texto"></label>
               <label><span class="field-label">Telefono</span><input v-model="formularioEdicion.telefono_cliente" class="input-texto" inputmode="tel"></label>
               <label><span class="field-label">Correo</span><input v-model="formularioEdicion.email_cliente" type="email" class="input-texto"></label>
               <label><span class="field-label">Plaza</span>
@@ -1027,7 +1065,10 @@ async function descargarExcelPersonalizado() {
                 <label v-if="formularioEdicion.rubro_comercio === 'Otro'"><span class="field-label">Otro rubro</span><input v-model="formularioEdicion.rubro_comercio_otro" class="input-texto"></label>
                 <label><span class="field-label">Comercio fuera de mercado</span><select v-model="formularioEdicion.comercio_fuera_mercado" class="input-texto"><option :value="null">Selecciona</option><option :value="false">No</option><option :value="true">Si</option></select></label>
               </template>
+              <label v-if="mostrarCreditos"><span class="field-label">Créditos</span><select v-model="formularioEdicion.creditos" class="input-texto"><option :value="false">No</option><option :value="true">Sí</option></select></label>
+              <label v-if="mostrarRemesas"><span class="field-label">Remesas</span><select v-model="formularioEdicion.remesas" class="input-texto"><option :value="false">No</option><option :value="true">Sí</option></select></label>
               <label v-for="campo in [{ key: 'descargo_app', label: 'Descargó la app' }, { key: 'registro', label: 'Registro' }, { key: 'cash_in', label: 'Cash-In' }, { key: 'cash_out', label: 'Cash-Out' }, { key: 'p2p', label: 'P2P' }, { key: 'qr_fisico', label: 'QR físico' }, { key: 'respaldo', label: 'Respaldo' }]" :key="campo.key"><span class="field-label">{{ campo.label }}</span><select v-model="formularioEdicion[campo.key]" class="input-texto"><option :value="false">No</option><option :value="true">Sí</option></select></label>
+              <label class="edicion-field-wide"><span class="field-label">Observaciones</span><textarea v-model="formularioEdicion.observaciones" class="input-texto" rows="3"></textarea></label>
               <label><span class="field-label">Hubo error</span><select v-model="formularioEdicion.hubo_error" class="input-texto"><option :value="false">No</option><option :value="true">Sí</option></select></label>
               <label v-if="formularioEdicion.hubo_error"><span class="field-label">Tipo de error</span><select v-model="formularioEdicion.tipo_error" class="input-texto"><option value="">Selecciona tipo</option><option v-if="formularioEdicion.tipo_error && !ACTIVATION_ERROR_TYPES.includes(formularioEdicion.tipo_error)" :value="formularioEdicion.tipo_error">Histórico: {{ formularioEdicion.tipo_error }}</option><option v-for="tipoError in ACTIVATION_ERROR_TYPES" :key="tipoError" :value="tipoError">{{ tipoError }}</option></select></label>
               <label v-if="formularioEdicion.hubo_error && formularioEdicion.tipo_error === 'Otro'" class="edicion-field-wide"><span class="field-label">Descripcion del error</span><textarea v-model="formularioEdicion.descripcion_error" class="input-texto" rows="3"></textarea></label>
