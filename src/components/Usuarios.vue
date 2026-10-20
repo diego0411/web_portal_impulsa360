@@ -52,7 +52,8 @@ const usuariosFiltrados = computed(() => usuarios.value.filter((u) => {
   const coincideBusqueda = containsNormalized(u.nombre, busqueda.value) || containsNormalized(u.email, busqueda.value)
   const coincideEquipo = !filtroEquipoId.value ||
     u.equipo_id === filtroEquipoId.value ||
-    u.equipos_asignados?.some((equipo) => equipo.id === filtroEquipoId.value)
+    u.equipos_asignados?.some((equipo) => equipo.id === filtroEquipoId.value) ||
+    u.equipos_facturados?.some((equipo) => equipo.id === filtroEquipoId.value)
   return coincideBusqueda && (!filtroRol.value || esRol(u, filtroRol.value)) &&
     (!filtroEstado.value || (u.estado ?? 'activo') === filtroEstado.value) &&
     (!filtroPlaza.value || mismaPlaza(u.plaza_nombre || u.plaza_base || u.plaza, filtroPlaza.value)) &&
@@ -84,8 +85,20 @@ function liderDelEquipo(form) {
 function plazaDelEquipo(equipo) { return plazasCatalogo.value.find((item) => item.id === equipo.plaza_id)?.nombre ?? 'Sin plaza' }
 function etiquetaEquipo(equipo) { return `#${equipo.numero} · ${plazaDelEquipo(equipo)}` }
 function equiposDelUsuario(usuario) {
-  if (esRol(usuario, 'lider')) return usuario.equipos_asignados?.map((e) => `#${e.numero} (${e.plaza || 'Sin plaza'})`).join(', ') || 'Sin equipos'
-  return usuario.equipo_numero ? `#${usuario.equipo_numero}` : 'Sin equipo'
+  const esLider = esRol(usuario, 'lider')
+  const equiposFacturados = esRol(usuario, 'facturador') ? (usuario.equipos_facturados ?? []) : []
+  if (!esLider && !equiposFacturados.length) return usuario.equipo_numero ? `#${usuario.equipo_numero}` : 'Sin equipo'
+  const equipos = []
+  const agregar = (equipo) => {
+    if (equipo?.id && !equipos.some((item) => item.id === equipo.id)) equipos.push(equipo)
+  }
+  if (esLider) (usuario.equipos_asignados ?? []).forEach(agregar)
+  equiposFacturados.forEach(agregar)
+  if (!esLider && usuario.equipo_numero) {
+    agregar({ id: usuario.equipo_id, numero: usuario.equipo_numero, plaza: usuario.plaza_nombre || usuario.plaza_base || usuario.plaza })
+  }
+  if (equipos.length) return equipos.map((e) => `#${e.numero} (${e.plaza || 'Sin plaza'})`).join(', ')
+  return esLider ? 'Sin equipos' : 'Sin equipo'
 }
 function ajustarRol(form) {
   form.rol = normalizarRol(form.rol)
