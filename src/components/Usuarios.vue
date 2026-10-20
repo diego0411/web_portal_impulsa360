@@ -97,8 +97,8 @@ function equiposDelUsuario(usuario) {
   if (!esLider && usuario.equipo_numero) {
     agregar({ id: usuario.equipo_id, numero: usuario.equipo_numero, plaza: usuario.plaza_nombre || usuario.plaza_base || usuario.plaza })
   }
-  if (equipos.length) return equipos.map((e) => `#${e.numero} (${e.plaza || 'Sin plaza'})`).join(', ')
-  return esLider ? 'Sin equipos' : 'Sin equipo'
+  if (equipos.length) return equipos.map((e) => `#${e.numero}`).join(', ')
+  return 'Sin equipo'
 }
 function ajustarRol(form) {
   form.rol = normalizarRol(form.rol)
