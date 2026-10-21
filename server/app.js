@@ -1498,7 +1498,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
   app.get('/portal/activations', asyncRoute(async (req, res) => {
     const from = Math.max(0, Number.parseInt(String(req.query.from ?? '0'), 10) || 0)
     const to = Math.min(from + 999, Math.max(from, Number.parseInt(String(req.query.to ?? from + 999), 10) || from + 999))
-    let query = adminSupabase.from('activaciones').select('*').order('created_at', { ascending: false })
+    let query = adminSupabase.from('activaciones').select('*').order('created_at', { ascending: false }).order('id', { ascending: true })
     if (req.portalUser.rol === 'lider') {
       const { data: team, error: teamError } = await adminSupabase.from('activadores').select('usuario_id').eq('lider_id', req.portalUser.usuario_id)
       if (teamError) { jsonError(res, 500, 'No se pudo resolver el equipo.', teamError.message); return }

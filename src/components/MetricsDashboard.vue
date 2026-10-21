@@ -71,21 +71,30 @@ function texto(value) { return typeof value === 'string' ? value.trim() : '' }
 function normalizado(value) { return texto(value).toLocaleLowerCase('es') }
 function fechaRegistro(item) { return (texto(item.fecha_activacion) || texto(item.created_at)).match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? '' }
 function plazaRegistro(item) { return nombreLegiblePlaza(texto(item.plaza_efectiva_registro) || texto(item.ciudad_activacion) || texto(item.plaza) || 'Sin plaza') }
-// Identidad canonica de plaza (snapshot historico):
-// 1) plaza_efectiva_id_registro (UUID, lo mas estable)
-// 2) texto normalizado (plaza_efectiva_registro || ciudad_activacion || plaza)
-// 3) 'none' (sin plaza)
+// Identidad canonica de plaza (snapshot historico): una plaza = una clave.
+// 1) nombre resuelto (texto de la fila o catalogo por UUID) normalizado con
+//    normalizarPlazaClave -> pkey:<clave>
+// 2) sin nombre en la fila ni en el catalogo -> UUID como respaldo (pid:<uuid>)
+// 3) sin plaza -> 'none'
+// plazaKey y plazaEtiqueta resuelven el nombre por separado (plazaNombreResuelto),
+// sin llamarse entre si, para evitar recursion.
 function plazaTextoBruto(item) { return texto(item.plaza_efectiva_registro) || texto(item.ciudad_activacion) || texto(item.plaza) || '' }
+function plazaNombreResuelto(item) {
+  const crudo = plazaTextoBruto(item)
+  if (crudo) return nombreLegiblePlaza(crudo)
+  const id = texto(item.plaza_efectiva_id_registro).toLowerCase()
+  return id ? (plazaCatalogo.value.get(id) ?? '') : ''
+}
 function plazaKey(item) {
+  const nombre = plazaNombreResuelto(item)
+  if (nombre) return `pkey:${normalizarPlazaClave(nombre)}`
   const id = texto(item.plaza_efectiva_id_registro).toLowerCase()
   if (id) return `pid:${id}`
-  const crudo = plazaTextoBruto(item)
-  if (crudo) return `pkey:${normalizarPlazaClave(crudo)}`
   return 'none'
 }
 function plazaEtiqueta(item, key) {
-  const crudo = plazaTextoBruto(item)
-  if (crudo) return nombreLegiblePlaza(crudo)
+  const nombre = plazaNombreResuelto(item)
+  if (nombre) return nombre
   const resolvedKey = key ?? plazaKey(item)
   if (resolvedKey.startsWith('pid:')) {
     const catalogado = plazaCatalogo.value.get(resolvedKey.slice(4)) ?? ''
@@ -98,8 +107,10 @@ const plazaCatalogo = computed(() => {
   for (const item of activaciones.value) {
     const id = texto(item.plaza_efectiva_id_registro).toLowerCase()
     if (!id || nombres.has(id)) continue
-    const display = nombreLegiblePlaza(plazaTextoBruto(item) || 'Sin plaza')
-    if (display !== 'Sin plaza') nombres.set(id, display)
+    // Solo nombres reales: sin texto de plaza no hay catalogo (evita que el
+    // centinela 'Sin plaza' se coloque como nombre y convierta un UUID en pkey).
+    const display = nombreLegiblePlaza(plazaTextoBruto(item))
+    if (display) nombres.set(id, display)
   }
   return nombres
 })
@@ -353,7 +364,6 @@ const dashboard = computed(() => {
   const teamStats = new Map()
   const teamMonthStats = new Map()
   const activadoresUnicos = new Set()
-  const comerciosUnicos = new Set()
   const nombresPlaza = new Map([['none', 'Sin plaza']]), nombresActivador = new Map([['none', 'Sin activador']]), nombresTipo = new Map([['none', 'Sin especificar'], ...TIPOS_FUNCIONALES.map((t) => [tipoKey({ tipo_activacion: t.tecnico }), t.nombre])]), nombresLider = new Map()
   for (const item of activaciones.value) {
     const fecha = fechaRegistro(item)
@@ -381,7 +391,7 @@ const dashboard = computed(() => {
     if (!nombresActivador.has(activador)) nombresActivador.set(activador, activadorDisplay)
     if (tipo !== 'none' && !nombresTipo.has(tipo)) nombresTipo.set(tipo, texto(item.tipo_activacion))
     if (lider !== 'none' && !nombresLider.has(lider)) nombresLider.set(lider, liderDisplay)
-    if (comercio) comerciosUnicos.add(normalizado(comercio))
+    if (tipo === 'comercio') kpis.comercios += 1
     kpis.total += 1
     if (fecha === todayKey) kpis.hoy += 1
     if (fecha >= weekStartKey && fecha <= todayKey) kpis.semana += 1
@@ -430,7 +440,7 @@ const dashboard = computed(() => {
       value: maps.activador.get(key) ?? 0,
     }
   }).sort((a, b) => b.value - a.value || a.label.localeCompare(b.label, 'es') || a.key.localeCompare(b.key))
-  return { rows, points, kpis: { ...kpis, comercios: comerciosUnicos.size }, promedios, activadoresUnicos: activadoresUnicos.size, porEquipo, resumenEquipoMes, porDia: ranking(maps.dia).sort((a, b) => a.label.localeCompare(b.label)), porPlaza: traducir(ranking(maps.plaza), nombresPlaza), topActivadores, porTipo: traducir(ranking(maps.tipo), nombresTipo), porClasificacion: ranking(maps.clasificacion), porErrores: ranking(maps.errores), topLideres: traducir(ranking(maps.lider, 10), nombresLider) }
+  return { rows, points, kpis, promedios, activadoresUnicos: activadoresUnicos.size, porEquipo, resumenEquipoMes, porDia: ranking(maps.dia).sort((a, b) => a.label.localeCompare(b.label)), porPlaza: traducir(ranking(maps.plaza), nombresPlaza), topActivadores, porTipo: traducir(ranking(maps.tipo), nombresTipo), porClasificacion: ranking(maps.clasificacion), porErrores: ranking(maps.errores), topLideres: traducir(ranking(maps.lider, 10), nombresLider) }
 })
 
 const equipoMesHeatmap = computed(() => {
@@ -483,7 +493,7 @@ const tarjetas = computed(() => [
   { key: 'cash-in', icon: '◇', label: 'Cash-In', value: formatNumber(dashboard.value.kpis.cashIn), note: 'Registros marcados' },
   { key: 'errores', icon: '!', label: 'Errores', value: formatNumber(dashboard.value.kpis.errores), note: 'Registros con error' },
   { key: 'tiendas', icon: '⌂', label: 'Tiendas', value: formatNumber(dashboard.value.kpis.tiendas), note: 'Clasificación barrio' },
-  { key: 'comercios', icon: '⌂', label: 'Comercios', value: formatNumber(dashboard.value.kpis.comercios), note: 'Comercios únicos con nombre' },
+  { key: 'comercios', icon: '⌂', label: 'Comercios', value: formatNumber(dashboard.value.kpis.comercios), note: 'Registros con tipo comercio' },
 ])
 const hayFiltros = computed(() => Boolean(filtroDesde.value || filtroHasta.value || filtroPlaza.value || filtroActivador.value || filtroTipo.value || filtroLider.value || filtroEquipo.value))
 function limpiarFiltros() { filtroDesde.value = ''; filtroHasta.value = ''; filtroPlaza.value = ''; filtroActivador.value = ''; filtroTipo.value = ''; filtroLider.value = ''; filtroEquipo.value = '' }

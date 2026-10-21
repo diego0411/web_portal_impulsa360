@@ -37,7 +37,7 @@ async function mount(authorizedRows = rows, catalog = users, catalogError = fals
     URL: { createObjectURL: (value) => { blob = value; return 'blob:test' }, revokeObjectURL: () => {} },
     document: { createElement: () => ({ click() {} }) },
   }
-  const vm = new Function(...Object.keys(deps), `${setup}\nreturn { dashboard, opciones, filtroLider, filtroActivador, filtroDesde, filtroHasta, filtroPlaza, filtroTipo, filtroEquipo, rankingPaginado, rankingTotalPages, rankingSiguiente, porcentajeDelTotal, exportarDashboard, errorMsg };`)(...Object.values(deps))
+  const vm = new Function(...Object.keys(deps), `${setup}\nreturn { dashboard, opciones, tarjetas, filtroLider, filtroActivador, filtroDesde, filtroHasta, filtroPlaza, filtroTipo, filtroEquipo, rankingPaginado, rankingTotalPages, rankingSiguiente, porcentajeDelTotal, exportarDashboard, errorMsg };`)(...Object.values(deps))
   await mounted()
   return { ...vm, csv: async () => { blob = null; vm.exportarDashboard(); return blob ? await blob.text() : '' } }
 }
@@ -223,4 +223,62 @@ test('reconoce Cliente antiguo como categoría sin alterar los tipos existentes'
   await assertCount(vm, 0)
   vm.filtroTipo.value = ''
   await assertCount(vm, 5)
+})
+
+test('unifica claves pid/pkey de la misma plaza en selector, filtro y gráfico Ciudades', async () => {
+  const pidAlto = '70000000-0000-0000-0000-000000000001'
+  const pidOruro = '70000000-0000-0000-0000-000000000002'
+  const pidSinNombre = '70000000-0000-0000-0000-000000000003'
+  const data = [
+    { ...rows[0], id: 'a0000000-0000-0000-0000-000000000001', plaza_efectiva_id_registro: pidAlto, plaza_efectiva_registro: 'El Alto' },
+    { ...rows[1], id: 'a0000000-0000-0000-0000-000000000002', plaza_efectiva_id_registro: pidAlto, plaza_efectiva_registro: 'el_alto', plaza: '' },
+    { ...rows[2], id: 'a0000000-0000-0000-0000-000000000003', plaza_efectiva_registro: null, plaza: 'El Alto' },
+    { ...rows[3], id: 'a0000000-0000-0000-0000-000000000004', plaza_efectiva_id_registro: pidAlto, plaza_efectiva_registro: null, plaza: '' },
+    { ...rows[4], id: 'a0000000-0000-0000-0000-000000000005', plaza_efectiva_id_registro: pidOruro, plaza_efectiva_registro: 'Oruro', plaza: '' },
+    { ...rows[0], id: 'a0000000-0000-0000-0000-000000000006', plaza_efectiva_id_registro: pidSinNombre, plaza_efectiva_registro: null, plaza: '' },
+  ]
+  const vm = await mount(data)
+  await assertCount(vm, 6)
+
+  const alto = vm.opciones.value.plazas.filter((p) => normalizarPlazaClave(p.nombre) === 'elalto')
+  assert.equal(alto.length, 1)
+  assert.equal(alto[0].key, 'pkey:elalto')
+
+  assert.ok(vm.opciones.value.plazas.some((p) => p.key === 'pkey:oruro' && p.nombre === 'Oruro'))
+  assert.ok(vm.opciones.value.plazas.some((p) => p.key === `pid:${pidSinNombre}` && p.nombre === 'Sin plaza'))
+
+  const barrasAlto = vm.dashboard.value.porPlaza.filter((i) => normalizarPlazaClave(i.label) === 'elalto')
+  assert.equal(barrasAlto.length, 1)
+  assert.equal(barrasAlto[0].value, 4)
+  assert.ok(vm.dashboard.value.porPlaza.some((i) => i.key === 'pkey:oruro' && i.value === 1))
+
+  vm.filtroPlaza.value = alto[0].key
+  await assertCount(vm, 4)
+  vm.filtroPlaza.value = 'pkey:oruro'
+  await assertCount(vm, 1)
+  vm.filtroPlaza.value = ''
+  await assertCount(vm, 6)
+})
+
+test('KPI Comercios cuenta solo registros con tipo_activacion comercio exacto', async () => {
+  const data = [
+    { ...rows[0], id: 'b0000000-0000-0000-0000-000000000001', tipo_activacion: 'comercio', nombre_comercio: 'Kiosko Sur' },
+    { ...rows[1], id: 'b0000000-0000-0000-0000-000000000002', tipo_activacion: 'comercio' },
+    { ...rows[2], id: 'b0000000-0000-0000-0000-000000000003', tipo_activacion: 'reactivacion_comercio', nombre_comercio: 'Minimarket Norte' },
+    { ...rows[3], id: 'b0000000-0000-0000-0000-000000000004', tipo_activacion: 'transeunte', nombre_comercio: 'Puesto Central' },
+    { ...rows[4], id: 'b0000000-0000-0000-0000-000000000005', tipo_activacion: 'Comercio', nombre_comercio: 'Tienda Mix' },
+  ]
+  const vm = await mount(data)
+  assert.equal(vm.dashboard.value.kpis.comercios, 3)
+
+  const kpiComercios = vm.tarjetas.value.find((card) => card.key === 'comercios')
+  assert.equal(kpiComercios.value, '3')
+  assert.equal(kpiComercios.note, 'Registros con tipo comercio')
+
+  vm.filtroTipo.value = 'comercio'
+  await assertCount(vm, 3)
+  assert.equal(vm.dashboard.value.kpis.comercios, 3)
+  vm.filtroTipo.value = 'reactivacion_comercio'
+  await assertCount(vm, 1)
+  assert.equal(vm.dashboard.value.kpis.comercios, 0)
 })
