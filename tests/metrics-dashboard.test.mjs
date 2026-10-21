@@ -282,3 +282,102 @@ test('KPI Comercios cuenta solo registros con tipo_activacion comercio exacto', 
   await assertCount(vm, 1)
   assert.equal(vm.dashboard.value.kpis.comercios, 0)
 })
+
+test('promedios diario y semanal usan días calendario del intervalo seleccionado', async () => {
+  const vm = await mount()
+  vm.filtroDesde.value = '2026-10-02'
+  vm.filtroHasta.value = '2026-10-04'
+  await assertCount(vm, 3)
+  const { calendarioDiario, calendarioSemanal, diasPeriodo } = vm.dashboard.value.promedios
+  assert.equal(diasPeriodo, 3) // 02, 03 y 04 inclusive
+  assert.equal(calendarioDiario, 1) // 3 activaciones / 3 días
+  assert.equal(calendarioSemanal, 7) // 3 / (3/7)
+  const diaria = vm.tarjetas.value.find((card) => card.key === 'promedio-diario')
+  const semanal = vm.tarjetas.value.find((card) => card.key === 'promedio-semanal')
+  assert.equal(diaria.value, '1,0')
+  assert.equal(semanal.value, '7,0')
+  assert.equal(diaria.note, '3 días calendario')
+})
+
+test('promedios incluyen días sin activaciones en el denominador', async () => {
+  const data = [
+    { ...rows[0], id: 'c0000000-0000-0000-0000-000000000001', fecha_activacion: '2026-10-01' },
+    { ...rows[1], id: 'c0000000-0000-0000-0000-000000000002', fecha_activacion: '2026-10-05' },
+  ]
+  const vm = await mount(data)
+  vm.filtroDesde.value = '2026-10-01'
+  vm.filtroHasta.value = '2026-10-05'
+  await assertCount(vm, 2)
+  const { calendarioDiario, calendarioSemanal, diasPeriodo } = vm.dashboard.value.promedios
+  assert.equal(diasPeriodo, 5) // incluye el 02, 03 y 04 sin activaciones
+  assert.equal(calendarioDiario, 0.4) // 2 / 5
+  assert.equal(calendarioSemanal, 2.8) // 2 / (5/7)
+  assert.equal(vm.tarjetas.value.find((card) => card.key === 'promedio-diario').value, '0,4')
+  assert.equal(vm.tarjetas.value.find((card) => card.key === 'promedio-semanal').value, '2,8')
+})
+
+test('promedios recalculan con filtros no de fecha sobre el mismo período', async () => {
+  const vm = await mount()
+  vm.filtroDesde.value = '2026-10-01'
+  vm.filtroHasta.value = '2026-10-05'
+  await assertCount(vm, 5)
+  assert.equal(vm.dashboard.value.promedios.calendarioDiario, 1) // 5 / 5
+  vm.filtroPlaza.value = 'pkey:oruro'
+  await assertCount(vm, 0)
+  assert.equal(vm.dashboard.value.promedios.calendarioDiario, 0) // protegido: 0 / 5
+  assert.equal(vm.dashboard.value.promedios.calendarioSemanal, 0)
+  vm.filtroPlaza.value = 'pkey:lapaz'
+  await assertCount(vm, 5)
+  assert.equal(vm.dashboard.value.promedios.calendarioDiario, 1)
+  vm.filtroTipo.value = 'no-existe'
+  await assertCount(vm, 0)
+  assert.equal(vm.dashboard.value.promedios.calendarioSemanal, 0)
+})
+
+test('promedios protegen período vacío, futuro y dataset vacío', async () => {
+  const vm = await mount()
+  // Desde futuro: ninguna fila y ventana invertida -> 0 días -> 0 sin NaN.
+  vm.filtroDesde.value = '2099-01-01'
+  await assertCount(vm, 0)
+  assert.equal(vm.dashboard.value.promedios.diasPeriodo, 0)
+  assert.equal(vm.dashboard.value.promedios.calendarioDiario, 0)
+  assert.equal(vm.dashboard.value.promedios.calendarioSemanal, 0)
+  assert.equal(vm.tarjetas.value.find((card) => card.key === 'promedio-diario').value, '0,0')
+  // Hasta futuro se recorta a hoy; sin fechas el período es el mes actual hasta hoy.
+  vm.filtroDesde.value = ''
+  vm.filtroHasta.value = '2099-12-31'
+  const conHastaFuturo = vm.dashboard.value.promedios
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]))
+  const hoy = `${parts.year}-${parts.month}-${parts.day}`
+  assert.equal(conHastaFuturo.periodoHasta, hoy)
+  assert.ok(conHastaFuturo.diasPeriodo > 0)
+  // Dataset vacío con período válido -> 0.
+  const vacio = await mount([])
+  assert.equal(vacio.dashboard.value.promedios.calendarioDiario, 0)
+  assert.equal(vacio.dashboard.value.promedios.calendarioSemanal, 0)
+})
+
+test('sin fechas seleccionadas los promedios usan el mes actual hasta hoy', async () => {
+  const vm = await mount()
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]))
+  const hoy = `${parts.year}-${parts.month}-${parts.day}`
+  const mesInicio = `${parts.year}-${parts.month}-01`
+  const { calendarioDiario, calendarioSemanal, diasPeriodo, periodoDesde, periodoHasta, total } = { ...vm.dashboard.value.promedios, total: vm.dashboard.value.kpis.total }
+  assert.equal(periodoDesde, mesInicio)
+  assert.equal(periodoHasta, hoy)
+  const diasEsperados = Math.round((Date.parse(`${hoy}T12:00:00Z`) - Date.parse(`${mesInicio}T12:00:00Z`)) / 86400000) + 1
+  assert.equal(diasPeriodo, diasEsperados)
+  assert.equal(calendarioDiario, total / diasEsperados)
+  assert.equal(calendarioSemanal, total / (diasEsperados / 7))
+})
+
+test('la tarjeta Cash-In se oculta pero conserva cash_in en datos y CSV', async () => {
+  const data = rows.map((row, index) => ({ ...row, cash_in: index < 2 }))
+  const vm = await mount(data)
+  assert.ok(!vm.tarjetas.value.some((card) => card.key === 'cash-in'))
+  assert.equal(vm.dashboard.value.kpis.cashIn, 2)
+  const csv = await vm.csv()
+  const [header, ...lineas] = csv.trim().split('\n')
+  assert.ok(header.includes('Cash-In'))
+  assert.equal(lineas.filter((linea) => linea.includes(',"Si",')).length, 2)
+})

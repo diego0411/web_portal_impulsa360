@@ -270,6 +270,8 @@ const integrantesRanking = computed(() => (filtroEquipo.value ? integrantesEquip
 }))
 function formatNumber(value) { return numberFormatter.format(Number(value) || 0) }
 function formatDecimal(value) { return numberFormatter.format(Number(value.toFixed(1)) || 0) }
+// Promedios con 1 decimal y separador es-BO (muestra "1,0", no "1").
+function formatPromedio(value) { const n = Math.round((Number(value) || 0) * 10) / 10; return n.toFixed(1).replace('.', ',') }
 function formatDate(value) { const [year, month, day] = String(value || '').split('-'); return year && month && day ? `${day}/${month}/${year}` : 'Sin fecha' }
 function formatShortDate(value) { const [year, month, day] = String(value || '').split('-'); return year && month && day ? `${Number(day)}/${Number(month)}` : 'S/F' }
 function formatMonth(value) { const [year, month] = String(value || '').split('-'); return year && month ? `${month}/${year}` : 'Sin mes' }
@@ -281,6 +283,13 @@ function weekRegistro(fecha) {
   const start = new Date(date)
   start.setUTCDate(date.getUTCDate() - ((date.getUTCDay() + 6) % 7))
   return start.toISOString().slice(0, 10)
+}
+function diasEntre(desde, hasta) {
+  if (!desde || !hasta || desde > hasta) return 0
+  const a = Date.parse(`${desde}T12:00:00Z`)
+  const b = Date.parse(`${hasta}T12:00:00Z`)
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0
+  return Math.round((b - a) / 86400000) + 1
 }
 function sumar(map, key) { const label = texto(key) || 'Sin especificar'; map.set(label, (map.get(label) ?? 0) + 1) }
 function ranking(map, limit = Infinity) { return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'es')).slice(0, limit).map(([label, value]) => ({ label, value })) }
@@ -361,6 +370,11 @@ const dashboard = computed(() => {
   const rows = [], points = []
   const maps = { dia: new Map(), semana: new Map(), mes: new Map(), plaza: new Map(), activador: new Map(), tipo: new Map(), lider: new Map(), clasificacion: new Map(), errores: new Map() }
   const kpis = { total: 0, hoy: 0, semana: 0, mes: 0, cashIn: 0, errores: 0, tiendas: 0, comercios: 0 }
+  // Ventana de promedios: sin fechas, mes actual hasta hoy (America/La_Paz);
+  // con fechas, el intervalo seleccionado sin incluir días futuros.
+  const periodoDesde = filtroDesde.value || `${monthKey}-01`
+  const periodoHastaSel = filtroHasta.value || todayKey
+  const periodoHasta = periodoHastaSel > todayKey ? todayKey : periodoHastaSel
   const teamStats = new Map()
   const teamMonthStats = new Map()
   const activadoresUnicos = new Set()
@@ -426,10 +440,17 @@ const dashboard = computed(() => {
     comercios: item.comercios.size,
     errores: item.errores,
   })).sort((a, b) => b.mes.localeCompare(a.mes) || b.total - a.total || a.equipo.localeCompare(b.equipo, 'es'))
+  const diasPeriodo = diasEntre(periodoDesde, periodoHasta)
   const promedios = {
     diario: maps.dia.size ? kpis.total / maps.dia.size : 0,
     semanal: maps.semana.size ? kpis.total / maps.semana.size : 0,
     mensual: maps.mes.size ? kpis.total / maps.mes.size : 0,
+    // Promedios por días calendario (incluye días sin activaciones).
+    calendarioDiario: diasPeriodo > 0 ? kpis.total / diasPeriodo : 0,
+    calendarioSemanal: diasPeriodo > 0 ? kpis.total / (diasPeriodo / 7) : 0,
+    diasPeriodo,
+    periodoDesde,
+    periodoHasta,
   }
   const traducir = (entries, nombres) => entries.map((entry) => ({ key: entry.label, label: nombres.get(entry.label) ?? entry.label, value: entry.value }))
   const topActivadores = integrantesRanking.value.map((usuario) => {
@@ -490,7 +511,8 @@ const tarjetas = computed(() => [
   { key: 'hoy', icon: '◷', label: 'Hoy', value: formatNumber(dashboard.value.kpis.hoy), note: todayKey },
   { key: 'semana', icon: '▦', label: 'Semana', value: formatNumber(dashboard.value.kpis.semana), note: `Desde ${formatDate(weekStartKey)}` },
   { key: 'mes', icon: '□', label: 'Mes', value: formatNumber(dashboard.value.kpis.mes), note: formatMonth(monthKey) },
-  { key: 'cash-in', icon: '◇', label: 'Cash-In', value: formatNumber(dashboard.value.kpis.cashIn), note: 'Registros marcados' },
+  { key: 'promedio-diario', icon: '∿', label: 'Promedio diario', value: formatPromedio(dashboard.value.promedios.calendarioDiario), note: `${dashboard.value.promedios.diasPeriodo} días calendario` },
+  { key: 'promedio-semanal', icon: '∿', label: 'Promedio semanal', value: formatPromedio(dashboard.value.promedios.calendarioSemanal), note: `Sobre ${dashboard.value.promedios.diasPeriodo} días` },
   { key: 'errores', icon: '!', label: 'Errores', value: formatNumber(dashboard.value.kpis.errores), note: 'Registros con error' },
   { key: 'tiendas', icon: '⌂', label: 'Tiendas', value: formatNumber(dashboard.value.kpis.tiendas), note: 'Clasificación barrio' },
   { key: 'comercios', icon: '⌂', label: 'Comercios', value: formatNumber(dashboard.value.kpis.comercios), note: 'Registros con tipo comercio' },
