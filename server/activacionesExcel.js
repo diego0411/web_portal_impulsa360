@@ -1,5 +1,7 @@
 import ExcelJS from 'exceljs'
 import { neutralizeExportRow } from './exportSafety.js'
+import { aplicarAlcanceLider } from './alcanceLider.js'
+import { etiquetaCiudadActivacion, normalizarPlazaClave } from '../src/lib/plazas.js'
 
 const PAGE_SIZE = 1000
 const boliviaDateTimeFormatter = new Intl.DateTimeFormat('es-BO', {
@@ -7,10 +9,6 @@ const boliviaDateTimeFormatter = new Intl.DateTimeFormat('es-BO', {
   timeStyle: 'medium',
   timeZone: 'America/La_Paz',
 })
-
-function getCiudad(row) {
-  return row.plaza_efectiva_registro ?? row.ciudad_activacion ?? row.plaza ?? ''
-}
 
 function yesNo(value) {
   return value == null ? '' : value ? 'Si' : 'No'
@@ -42,18 +40,22 @@ function applyFilters(query, filters) {
 
 function matchesTextFilters(row, filters) {
   const includes = (value, search) => !search || String(value ?? '').toLocaleLowerCase('es').includes(search.toLocaleLowerCase('es'))
+  const mismaCiudad = (value, search) => !search || normalizarPlazaClave(value).includes(normalizarPlazaClave(search))
   return includes(row.impulsador, filters.impulsador) &&
     includes(row.zona_activacion, filters.distrito) &&
-    includes(getCiudad(row), filters.plaza)
+    mismaCiudad(etiquetaCiudadActivacion(row), filters.plaza)
 }
 
-async function fetchActivaciones(adminSupabase, filters, allowedUserIds) {
-  if (allowedUserIds?.length === 0) return []
+async function fetchActivaciones(adminSupabase, filters, alcance) {
   const rows = []
   for (let from = 0; ; from += PAGE_SIZE) {
     let query = adminSupabase.from('activaciones').select('*').order('created_at', { ascending: false })
     query = applyFilters(query, filters)
-    if (allowedUserIds) query = query.in('usuario_id', allowedUserIds)
+    if (alcance) {
+      const acotado = aplicarAlcanceLider(query, alcance)
+      if (!acotado) return rows
+      query = acotado
+    }
     const { data, error } = await query.range(from, from + PAGE_SIZE - 1)
     if (error) throw error
     const page = data ?? []
@@ -86,14 +88,15 @@ function photoHyperlink(url) {
   return url ? { text: 'Ver imagen', hyperlink: url } : null
 }
 
-export async function generateActivacionesExcel({ adminSupabase, bucket, filters, allowedUserIds, buildEvidenceUrl }) {
-  const rows = await fetchActivaciones(adminSupabase, filters, allowedUserIds)
+export async function generateActivacionesExcel({ adminSupabase, bucket, filters, alcance, buildEvidenceUrl }) {
+  const rows = await fetchActivaciones(adminSupabase, filters, alcance)
   const evidenceLinks = resolveEvidenceLinks(rows, bucket, buildEvidenceUrl)
   const workbook = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet('Activaciones', { views: [{ state: 'frozen', ySplit: 2 }] })
   worksheet.columns = [
     ['#', 'numero', 7], ['Creado', 'creado', 26], ['Fecha', 'fecha', 14],
-    ['Impulsador', 'impulsador', 24], ['Plaza', 'plaza', 18], ['Distrito', 'distrito', 20],
+    ['Impulsador', 'impulsador', 24], ['Ciudad', 'ciudad', 18], ['Distrito', 'distrito', 20],
+    ['Plaza Base', 'plazaBase', 18], ['Plaza Efectiva', 'plazaEfectiva', 20],
     ['Equipo', 'equipo', 20], ['Facturador', 'facturador', 22], ['Lider vigente', 'liderVigente', 24],
     ['Nombres Cliente', 'nombres', 24], ['Apellidos Cliente', 'apellidos', 24],
     ['CI Cliente', 'ci', 14], ['Telefono Cliente', 'telefono', 16], ['Email Cliente', 'email', 28],
@@ -123,7 +126,8 @@ export async function generateActivacionesExcel({ adminSupabase, bucket, filters
 
   rows.forEach((row, index) => worksheet.addRow(neutralizeExportRow({
     numero: index + 1, creado: formatCreatedAt(row.created_at), fecha: row.fecha_activacion,
-    impulsador: row.impulsador, plaza: getCiudad(row), distrito: row.zona_activacion,
+    impulsador: row.impulsador, ciudad: etiquetaCiudadActivacion(row), distrito: row.zona_activacion,
+    plazaBase: row.plaza_base_registro ?? '', plazaEfectiva: row.plaza_efectiva_registro ?? '',
     equipo: row.equipo_nombre_registro || (row.equipo_numero_registro ? `Equipo #${row.equipo_numero_registro}` : ''),
     facturador: row.facturador_nombre_registro, liderVigente: row.lider_nombre_registro,
     nombres: row.nombres_cliente, apellidos: row.apellidos_cliente, ci: row.ci_cliente,

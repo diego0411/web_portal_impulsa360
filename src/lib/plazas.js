@@ -15,6 +15,19 @@ const PLAZA_CANONICAS = new Map([
   ['cobija', 'Cobija'],
 ])
 
+export const SIN_CIUDAD_REGISTRADA = 'Sin ciudad registrada'
+
+export function ciudadActivacion(fila) {
+  const crudo = typeof fila === 'string' ? fila : fila?.ciudad_activacion
+  const clave = normalizarPlazaClave(crudo)
+  if (!clave) return ''
+  return PLAZA_CANONICAS.get(clave) ?? titleCase(crudo)
+}
+
+export function etiquetaCiudadActivacion(fila) {
+  return ciudadActivacion(fila) || SIN_CIUDAD_REGISTRADA
+}
+
 export function normalizarPlazaClave(value) {
   return String(value ?? '')
     .trim()

@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import express from 'express'
 import { createClient } from '@supabase/supabase-js'
 import { generateActivacionesExcel } from './activacionesExcel.js'
+import { aplicarAlcanceLider, esUuid } from './alcanceLider.js'
 import {
   activationClassificationUpdate,
   isCreditosEligible,
@@ -671,6 +672,20 @@ async function attachActivationSignedPhotos(adminSupabase, bucketName, rows, evi
     foto_url_evidencia: buildEvidenceLinkPath(evidenceSecret, row, 'principal', bucketName),
     foto_cash_in_evidencia: buildEvidenceLinkPath(evidenceSecret, row, 'cash-in', bucketName),
   }))
+}
+
+async function attachActivationCreatorEmail(adminSupabase, rows) {
+  const ids = [...new Set(rows.map((row) => row?.usuario_id).filter(esUuid))]
+  const correos = new Map()
+  if (ids.length) {
+    const { data, error } = await adminSupabase.from('activadores').select('usuario_id,email').in('usuario_id', ids)
+    if (error) throw error
+    for (const perfil of data ?? []) {
+      const email = typeof perfil.email === 'string' ? perfil.email.trim() : ''
+      correos.set(perfil.usuario_id, email || null)
+    }
+  }
+  return rows.map((row) => ({ ...row, usuario_email: correos.get(row.usuario_id) ?? null }))
 }
 
 function buildEvidenceLinkPath(secret, row, tipo, bucketName) {
@@ -1502,20 +1517,24 @@ export function createAdminApiApp({ env = process.env } = {}) {
     if (req.portalUser.rol === 'lider') {
       const { data: team, error: teamError } = await adminSupabase.from('activadores').select('usuario_id').eq('lider_id', req.portalUser.usuario_id)
       if (teamError) { jsonError(res, 500, 'No se pudo resolver el equipo.', teamError.message); return }
-      const ids = (team ?? []).map((item) => item.usuario_id).filter(Boolean)
-      if (!ids.length) { res.json({ activations: [] }); return }
-      query = query.in('usuario_id', ids)
+      const alcance = aplicarAlcanceLider(query, {
+        userIds: (team ?? []).map((item) => item.usuario_id),
+        liderId: req.portalUser.usuario_id,
+      })
+      if (!alcance) { res.json({ activations: [] }); return }
+      query = alcance
     }
     const { data, error } = await query.range(from, to)
     if (error) { jsonError(res, 500, 'No se pudo obtener activaciones.', error.message); return }
     try {
-      res.json({ activations: await attachActivationSignedPhotos(adminSupabase, activacionesBucket, data ?? [], env.EVIDENCE_LINK_SECRET) })
+      const conCorreo = await attachActivationCreatorEmail(adminSupabase, data ?? [])
+      res.json({ activations: await attachActivationSignedPhotos(adminSupabase, activacionesBucket, conCorreo, env.EVIDENCE_LINK_SECRET) })
     } catch (photoError) {
       jsonError(res, 500, 'No se pudo preparar enlaces seguros de evidencias.', photoError?.message)
     }
   }))
   app.get('/portal/activations/export-excel', asyncRoute(async (req, res) => {
-    let allowedUserIds = null
+    let alcance = null
     if (req.portalUser.rol === 'lider') {
       const { data: team, error: teamError } = await adminSupabase
         .from('activadores')
@@ -1525,7 +1544,10 @@ export function createAdminApiApp({ env = process.env } = {}) {
         jsonError(res, 500, 'No se pudo resolver el equipo.', teamError.message)
         return
       }
-      allowedUserIds = (team ?? []).map((item) => item.usuario_id).filter(Boolean)
+      alcance = {
+        userIds: (team ?? []).map((item) => item.usuario_id),
+        liderId: req.portalUser.usuario_id,
+      }
     }
 
     const filters = {
@@ -1544,7 +1566,7 @@ export function createAdminApiApp({ env = process.env } = {}) {
       adminSupabase,
       bucket: activacionesBucket,
       filters,
-      allowedUserIds,
+      alcance,
       buildEvidenceUrl: (activacionId, tipo, objectPath) => `${evidenceBaseUrl}${buildEvidencePath(
         activacionId,
         tipo,

@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { fetchAllActivaciones, portalRequest } from '../lib/activacionesService'
 import MetricsHeatMap from './MetricsHeatMap.vue'
-import { nombreLegiblePlaza, normalizarPlazaClave } from '../lib/plazas'
+import { ciudadActivacion, etiquetaCiudadActivacion, normalizarPlazaClave, SIN_CIUDAD_REGISTRADA } from '../lib/plazas'
 import { neutralizeSpreadsheetFormula } from '../lib/exportSafety'
 import { logClientError } from '../lib/logging'
 
@@ -28,11 +28,17 @@ function rolesCatalogo(usuario) {
   if (Array.isArray(usuario?.roles)) return usuario.roles.map((rol) => String(rol ?? '').trim().toLowerCase())
   return [String(usuario?.rol ?? '').trim().toLowerCase()]
 }
-const activadoresOperativos = computed(() => [...usuariosPorId.value.values()].filter((usuario) => {
+// Catálogo de activadores sin filtro de estado: un perfil inhabilitado conserva
+// sus activaciones históricas en ranking, métricas y selectores.
+const catalogoActivadores = computed(() => [...usuariosPorId.value.values()].filter((usuario) => {
   const id = texto(usuario.usuario_id)
-  const estado = normalizado(usuario.estado || 'activo')
-  return Boolean(id) && estado === 'activo' && rolesCatalogo(usuario).includes('activador')
+  return Boolean(id) && rolesCatalogo(usuario).includes('activador')
 }))
+function estadoNormalizado(usuario) { return normalizado(usuario?.estado || 'activo') }
+function etiquetaConEstado(usuario, etiqueta) {
+  if (estadoNormalizado(usuario) === 'activo') return etiqueta
+  return /\(inhabilitado\)$/i.test(etiqueta) ? etiqueta : `${etiqueta} (inhabilitado)`
+}
 const catalogoLideres = computed(() => {
   const lideres = new Map()
   for (const usuario of usuariosCatalogo.value) {
@@ -70,53 +76,31 @@ onMounted(async () => {
 function texto(value) { return typeof value === 'string' ? value.trim() : '' }
 function normalizado(value) { return texto(value).toLocaleLowerCase('es') }
 function fechaRegistro(item) { return (texto(item.fecha_activacion) || texto(item.created_at)).match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? '' }
-function plazaRegistro(item) { return nombreLegiblePlaza(texto(item.plaza_efectiva_registro) || texto(item.ciudad_activacion) || texto(item.plaza) || 'Sin plaza') }
-// Identidad canonica de plaza (snapshot historico): una plaza = una clave.
-// 1) nombre resuelto (texto de la fila o catalogo por UUID) normalizado con
-//    normalizarPlazaClave -> pkey:<clave>
-// 2) sin nombre en la fila ni en el catalogo -> UUID como respaldo (pid:<uuid>)
-// 3) sin plaza -> 'none'
-// plazaKey y plazaEtiqueta resuelven el nombre por separado (plazaNombreResuelto),
-// sin llamarse entre si, para evitar recursion.
-function plazaTextoBruto(item) { return texto(item.plaza_efectiva_registro) || texto(item.ciudad_activacion) || texto(item.plaza) || '' }
-function plazaNombreResuelto(item) {
-  const crudo = plazaTextoBruto(item)
-  if (crudo) return nombreLegiblePlaza(crudo)
-  const id = texto(item.plaza_efectiva_id_registro).toLowerCase()
-  return id ? (plazaCatalogo.value.get(id) ?? '') : ''
-}
+function plazaRegistro(item) { return etiquetaCiudadActivacion(item) }
+// Identidad de ciudad de activación: única fuente `ciudad_activacion`,
+// normalizada con normalizarPlazaClave -> pkey:<clave>. Sin ciudad registrada
+// -> 'none' (etiqueta "Sin ciudad registrada"). La plaza organizacional
+// (plaza_efectiva_registro / plaza_base_registro) no participa: es
+// atribución de equipo, no ubicación geográfica.
+function plazaTextoBruto(item) { return ciudadActivacion(item) }
 function plazaKey(item) {
-  const nombre = plazaNombreResuelto(item)
+  const nombre = plazaTextoBruto(item)
   if (nombre) return `pkey:${normalizarPlazaClave(nombre)}`
-  const id = texto(item.plaza_efectiva_id_registro).toLowerCase()
-  if (id) return `pid:${id}`
   return 'none'
 }
-function plazaEtiqueta(item, key) {
-  const nombre = plazaNombreResuelto(item)
+function plazaEtiqueta(item) {
+  const nombre = plazaTextoBruto(item)
   if (nombre) return nombre
-  const resolvedKey = key ?? plazaKey(item)
-  if (resolvedKey.startsWith('pid:')) {
-    const catalogado = plazaCatalogo.value.get(resolvedKey.slice(4)) ?? ''
-    if (catalogado) return catalogado
-  }
-  return 'Sin plaza'
+  return SIN_CIUDAD_REGISTRADA
 }
-const plazaCatalogo = computed(() => {
-  const nombres = new Map()
-  for (const item of activaciones.value) {
-    const id = texto(item.plaza_efectiva_id_registro).toLowerCase()
-    if (!id || nombres.has(id)) continue
-    // Solo nombres reales: sin texto de plaza no hay catalogo (evita que el
-    // centinela 'Sin plaza' se coloque como nombre y convierta un UUID en pkey).
-    const display = nombreLegiblePlaza(plazaTextoBruto(item))
-    if (display) nombres.set(id, display)
-  }
-  return nombres
-})
-// Mismo criterio de equipo actual que /portal/activations.
-// El snapshot histórico no restringe ni atribuye las métricas de líder actual.
+// Regla de atribución de líder, en orden:
+// 1) lider_id_registro (snapshot del momento del registro) cuando existe.
+// 2) Si el snapshot es NULL: líder actual del creador (activadores.lider_id),
+//    resoluble solo contra el catálogo autorizado.
+// 3) Sin regla resoluble: 'none' (sin atribución; nunca por nombre ni plaza).
 function liderKey(item) {
+  const registro = texto(item.lider_id_registro).toLowerCase()
+  if (registro) return `lid:${registro}`
   const usuario = usuariosPorId.value.get(texto(item.usuario_id).toLowerCase())
   const id = texto(usuario?.lider_id).toLowerCase()
   if (id) return `lid:${id}`
@@ -125,6 +109,9 @@ function liderKey(item) {
 function liderEtiqueta(item, key) {
   const resolvedKey = key ?? liderKey(item)
   if (resolvedKey.startsWith('lid:')) {
+    const registroId = texto(item?.lider_id_registro).toLowerCase()
+    const nombreRegistro = texto(item?.lider_nombre_registro)
+    if (registroId && registroId === resolvedKey.slice(4) && nombreRegistro) return nombreRegistro
     const catalogado = liderCatalogo.value.get(resolvedKey.slice(4)) ?? ''
     if (catalogado) return catalogado
     const delCatalogo = catalogoLideres.value.get(resolvedKey.slice(4))?.nombre ?? ''
@@ -255,14 +242,14 @@ function comercioRegistro(item) { return texto(item.nombre_comercio) || texto(it
 // Solo integrantes del catálogo autorizado; la pertenencia es actual y por UUID.
 const integrantesEquipo = computed(() => {
   if (!filtroEquipo.value) return []
-  return activadoresOperativos.value.filter((usuario) => {
+  return catalogoActivadores.value.filter((usuario) => {
     const equipoId = texto(usuario.equipo_id).toLowerCase()
     if (!equipoId) return false
     if (`id:${equipoId}` !== filtroEquipo.value) return false
     return !filtroLider.value || liderKey(usuario) === filtroLider.value
   })
 })
-const integrantesRanking = computed(() => (filtroEquipo.value ? integrantesEquipo.value : activadoresOperativos.value).filter((usuario) => {
+const integrantesRanking = computed(() => (filtroEquipo.value ? integrantesEquipo.value : catalogoActivadores.value).filter((usuario) => {
   const key = activadorKey(usuario)
   if (filtroActivador.value && key !== filtroActivador.value) return false
   if (filtroLider.value && liderKey(usuario) !== filtroLider.value) return false
@@ -307,7 +294,7 @@ const opciones = computed(() => {
   const equipos = new Map()
   for (const item of activaciones.value) {
     const plaza = plazaKey(item)
-    if (!plazas.has(plaza)) plazas.set(plaza, { key: plaza, nombre: plazaEtiqueta(item, plaza) })
+    if (!plazas.has(plaza)) plazas.set(plaza, { key: plaza, nombre: plazaEtiqueta(item) })
     const activador = activadorKey(item)
     if (!activadores.has(activador)) activadores.set(activador, { key: activador, nombre: activadorEtiqueta(item, activador) })
     const tipo = tipoKey(item)
@@ -318,15 +305,19 @@ const opciones = computed(() => {
     if (!equipos.has(key)) equipos.set(key, { key, nombre: equipoEtiqueta(item, key) })
   }
   // Hace seleccionables también los equipos e integrantes sin registros.
-  for (const usuario of activadoresOperativos.value) {
+  for (const usuario of catalogoActivadores.value) {
     const id = texto(usuario.equipo_id).toLowerCase()
     if (!id) continue
     const key = `id:${id}`
     if (!equipos.has(key)) equipos.set(key, { key, nombre: equipoEtiqueta({ equipo_id_registro: id, equipo_numero_registro: usuario.equipo_numero, equipo_nombre_registro: usuario.equipo_nombre }, key) })
   }
-  for (const usuario of activadoresOperativos.value) {
+  for (const usuario of catalogoActivadores.value) {
     const key = activadorKey(usuario)
-    if (!activadores.has(key)) activadores.set(key, { key, nombre: texto(usuario.nombre) || activadorEtiqueta(usuario, key) })
+    if (!activadores.has(key)) activadores.set(key, { key, nombre: etiquetaConEstado(usuario, texto(usuario.nombre) || activadorEtiqueta(usuario, key)) })
+  }
+  for (const [key, entry] of activadores) {
+    const usuario = usuariosPorId.value.get(key.startsWith('uid:') ? key.slice(4) : '')
+    if (usuario) entry.nombre = etiquetaConEstado(usuario, entry.nombre)
   }
   // Unión con el catálogo funcional confirmado: agrega tipos oficiales aunque no
   // tengan filas (seleccionarlos muestra cero). Los históricos presentes en datos
@@ -378,11 +369,11 @@ const dashboard = computed(() => {
   const teamStats = new Map()
   const teamMonthStats = new Map()
   const activadoresUnicos = new Set()
-  const nombresPlaza = new Map([['none', 'Sin plaza']]), nombresActivador = new Map([['none', 'Sin activador']]), nombresTipo = new Map([['none', 'Sin especificar'], ...TIPOS_FUNCIONALES.map((t) => [tipoKey({ tipo_activacion: t.tecnico }), t.nombre])]), nombresLider = new Map()
+  const nombresPlaza = new Map([['none', SIN_CIUDAD_REGISTRADA]]), nombresActivador = new Map([['none', 'Sin activador']]), nombresTipo = new Map([['none', 'Sin especificar'], ...TIPOS_FUNCIONALES.map((t) => [tipoKey({ tipo_activacion: t.tecnico }), t.nombre])]), nombresLider = new Map()
   for (const item of activaciones.value) {
     const fecha = fechaRegistro(item)
     const plaza = plazaKey(item)
-    const plazaDisplay = plazaEtiqueta(item, plaza)
+    const plazaDisplay = plazaEtiqueta(item)
     const activador = activadorKey(item)
     const activadorDisplay = activadorEtiqueta(item, activador)
     const tipo = tipoKey(item)
@@ -453,14 +444,25 @@ const dashboard = computed(() => {
     periodoHasta,
   }
   const traducir = (entries, nombres) => entries.map((entry) => ({ key: entry.label, label: nombres.get(entry.label) ?? entry.label, value: entry.value }))
-  const topActivadores = integrantesRanking.value.map((usuario) => {
+  const rankingActivadores = new Map()
+  for (const usuario of integrantesRanking.value) {
     const key = activadorKey(usuario)
-    return {
+    rankingActivadores.set(key, {
       key,
-      label: texto(usuario.nombre) || nombresActivador.get(key) || activadorEtiqueta(usuario, key),
+      label: etiquetaConEstado(usuario, texto(usuario.nombre) || nombresActivador.get(key) || activadorEtiqueta(usuario, key)),
       value: maps.activador.get(key) ?? 0,
-    }
-  }).sort((a, b) => b.value - a.value || a.label.localeCompare(b.label, 'es') || a.key.localeCompare(b.key))
+    })
+  }
+  for (const [key, value] of maps.activador) {
+    if (key === 'none') continue
+    const existente = rankingActivadores.get(key)
+    if (existente) { existente.value = value; continue }
+    const usuario = usuariosPorId.value.get(key.slice(4))
+    const base = nombresActivador.get(key) ?? activadorCatalogo.value.get(key.slice(4)) ?? `Activador · ${key.slice(4, 12)}`
+    rankingActivadores.set(key, { key, label: etiquetaConEstado(usuario, base), value })
+  }
+  const topActivadores = [...rankingActivadores.values()]
+    .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label, 'es') || a.key.localeCompare(b.key))
   return { rows, points, kpis, promedios, activadoresUnicos: activadoresUnicos.size, porEquipo, resumenEquipoMes, porDia: ranking(maps.dia).sort((a, b) => a.label.localeCompare(b.label)), porPlaza: traducir(ranking(maps.plaza), nombresPlaza), topActivadores, porTipo: traducir(ranking(maps.tipo), nombresTipo), porClasificacion: ranking(maps.clasificacion), porErrores: ranking(maps.errores), topLideres: traducir(ranking(maps.lider, 10), nombresLider) }
 })
 
@@ -534,7 +536,7 @@ function exportarDashboard() {
   if (!dashboard.value.rows.length) return
   const escape = (value) => `"${String(neutralizeSpreadsheetFormula(value) ?? '').replace(/"/g, '""')}"`
   const data = dashboard.value.rows.map((item) => [fechaRegistro(item), texto(item.impulsador), plazaRegistro(item), texto(item.tipo_activacion), item.cash_in === true ? 'Si' : 'No', item.hubo_error === true ? 'Si' : 'No'].map(escape).join(','))
-  const blob = new Blob([`\uFEFF${[['Fecha', 'Activador', 'Plaza', 'Tipo', 'Cash-In', 'Error'].map(escape).join(','), ...data].join('\n')}`], { type: 'text/csv;charset=utf-8' })
+  const blob = new Blob([`\uFEFF${[['Fecha', 'Activador', 'Ciudad', 'Tipo', 'Cash-In', 'Error'].map(escape).join(','), ...data].join('\n')}`], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url; link.download = 'dashboard-activaciones.csv'; link.click(); URL.revokeObjectURL(url)
 }
 </script>
@@ -544,10 +546,10 @@ function exportarDashboard() {
     <header class="metrics-saas-header"><div class="metrics-heading"><p class="view-kicker">Inteligencia Operativa</p><h1 class="view-title">Dashboard de Activaciones</h1><p class="view-description">Una vista clara del volumen, cobertura y desempeño del equipo en campo.</p></div><button class="boton boton-primario" :disabled="loading || !dashboard.rows.length" @click="exportarDashboard">Exportar</button></header>
     <section class="metrics-filter-card"><div class="metrics-filter-head"><div><h2>Filtros</h2><p>{{ formatNumber(dashboard.rows.length) }} de {{ formatNumber(activaciones.length) }} registros</p></div><button class="boton" :disabled="!hayFiltros" @click="limpiarFiltros">Limpiar</button></div><div class="filtros metrics-filter-grid">
       <label><span class="field-label">Fecha desde</span><input v-model="filtroDesde" type="date" class="input-texto"></label><label><span class="field-label">Fecha hasta</span><input v-model="filtroHasta" type="date" class="input-texto"></label>
-      <label><span class="field-label">Plaza / ciudad</span><select v-model="filtroPlaza" class="input-texto"><option value="">Todas</option><option v-for="plaza in opciones.plazas" :key="plaza.key" :value="plaza.key">{{ plaza.nombre }}</option></select></label>
+      <label><span class="field-label">Ciudad de activación</span><select v-model="filtroPlaza" class="input-texto"><option value="">Todas</option><option v-for="plaza in opciones.plazas" :key="plaza.key" :value="plaza.key">{{ plaza.nombre }}</option></select></label>
       <label><span class="field-label">Activador</span><select v-model="filtroActivador" class="input-texto"><option value="">Todos</option><option v-for="activador in opciones.activadores" :key="activador.key" :value="activador.key">{{ activador.nombre }}</option></select></label>
       <label><span class="field-label">Equipo</span><select v-model="filtroEquipo" class="input-texto"><option value="">Todos</option><option v-for="equipo in opciones.equipos" :key="equipo.key" :value="equipo.key">{{ equipo.nombre }}</option></select></label>
-      <label v-if="opciones.lideres.length"><span class="field-label">Líder actual</span><select v-model="filtroLider" class="input-texto"><option value="">Todos</option><option v-for="lider in opciones.lideres" :key="lider.key" :value="lider.key">{{ lider.nombre }}</option></select></label>
+      <label v-if="opciones.lideres.length"><span class="field-label">Líder de registro</span><select v-model="filtroLider" class="input-texto"><option value="">Todos</option><option v-for="lider in opciones.lideres" :key="lider.key" :value="lider.key">{{ lider.nombre }}</option></select></label>
       <label><span class="field-label">Tipo de activación</span><select v-model="filtroTipo" class="input-texto"><option value="">Todos</option><option v-for="tipo in opciones.tipos" :key="tipo.key" :value="tipo.key">{{ tipo.nombre }}</option></select></label>
     </div></section>
     <p v-if="loading" class="panel-empty">Cargando indicadores...</p><p v-else-if="errorMsg" class="mensaje-error">{{ errorMsg }}</p><p v-else-if="!dashboard.rows.length && !dashboard.topActivadores.length" class="panel-empty">No hay activaciones para los filtros seleccionados.</p>
@@ -558,7 +560,7 @@ function exportarDashboard() {
       </section>
       <section class="metrics-four-grid">
         <article class="metrics-chart-card metrics-small-chart"><h3>Activaciones por Tipo</h3><p>Todos los tipos registrados.</p><div class="chart-legend"><span class="legend-dot"></span><span>Tipos filtrados</span></div><div class="vertical-bars adaptive-bars" :style="{ '--items': dashboard.porTipo.length }"><div v-for="item in dashboard.porTipo" :key="item.label" class="vertical-bar" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><strong>{{ formatNumber(item.value) }}</strong><span :style="{ height: barHeight(item.value, dashboard.porTipo) }"></span><small>{{ item.label }}</small></div></div></article>
-        <article class="metrics-chart-card metrics-small-chart"><h3>Ciudades</h3><p>Distribución por plaza o ciudad.</p><div class="chart-legend"><span class="legend-dot"></span><span>Top 10</span></div><div class="vertical-bars city-bars"><div v-for="item in dashboard.porPlaza.slice(0, 10)" :key="item.label" class="vertical-bar" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><strong>{{ formatNumber(item.value) }}</strong><span :style="{ height: barHeight(item.value, dashboard.porPlaza) }"></span><small>{{ item.label }}</small></div></div></article>
+        <article class="metrics-chart-card metrics-small-chart"><h3>Ciudades</h3><p>Distribución por ciudad de activación.</p><div class="chart-legend"><span class="legend-dot"></span><span>Top 10</span></div><div class="vertical-bars city-bars"><div v-for="item in dashboard.porPlaza.slice(0, 10)" :key="item.label" class="vertical-bar" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><strong>{{ formatNumber(item.value) }}</strong><span :style="{ height: barHeight(item.value, dashboard.porPlaza) }"></span><small>{{ item.label }}</small></div></div></article>
         <article class="metrics-chart-card metrics-small-chart"><h3>Equipos</h3><p>Top equipos por activaciones.</p><div class="dashboard-bars compact-bars"><div v-for="team in dashboard.porEquipo.slice(0, 8)" :key="team.nombre" class="dashboard-bar-row" :title="`${team.nombre}: ${formatNumber(team.total)} activaciones`"><span>{{ team.nombre }}</span><div class="metric-track"><div class="metric-fill metric-fill-soft" :style="{ width: anchoBarra(team.total, dashboard.porEquipo.map((item) => ({ value: item.total }))) }"></div></div><strong>{{ formatNumber(team.total) }}</strong></div></div></article>
         <article class="metrics-chart-card metrics-small-chart"><h3>Líderes</h3><p>Activaciones de integrantes del equipo actual.</p><div v-if="dashboard.topLideres.length" class="dashboard-bars compact-bars"><div v-for="item in dashboard.topLideres.slice(0, 8)" :key="item.label" class="dashboard-bar-row" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><span>{{ item.label }}</span><div class="metric-track"><div class="metric-fill" :style="{ width: anchoBarra(item.value, dashboard.topLideres) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div><p v-else class="metrics-empty-small">Sin líderes resolubles.</p></article>
         <article class="metrics-chart-card metrics-small-chart"><h3>Errores</h3><p>Activaciones con y sin error.</p><div class="dashboard-bars compact-bars"><div v-for="item in dashboard.porErrores" :key="item.label" class="dashboard-bar-row" :title="`${item.label}: ${formatNumber(item.value)} activaciones`"><span>{{ item.label }}</span><div class="metric-track"><div class="metric-fill" :style="{ width: anchoBarra(item.value, dashboard.porErrores) }"></div></div><strong>{{ formatNumber(item.value) }}</strong></div></div></article>

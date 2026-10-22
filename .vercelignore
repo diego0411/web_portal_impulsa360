@@ -1,0 +1,20 @@
+# Secretos y credenciales locales: nunca subirlos a Vercel.
+# Vercel solo excluye por defecto .env.local y .env.*.local (ver docs "Ignored files and folders");
+# sin este archivo, .env y .env.example viajaban en el upload del despliegue.
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+.npmrc
+.netrc
+credentials*
+*credenciales*
+supabase/.temp/
+.env.local
+# .env.example queda permitido unicamente si sus valores son placeholders saneados
+!.env.example

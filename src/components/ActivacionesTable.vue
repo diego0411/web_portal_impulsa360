@@ -11,7 +11,7 @@ import {
 import { isValidEmail, normalizeEmail, normalizeText } from '../lib/textUtils'
 import { useAuth } from '../lib/authStore'
 import { AUTH_ENABLED } from '../lib/featureFlags'
-import { nombreLegiblePlaza } from '../lib/plazas'
+import { etiquetaCiudadActivacion, normalizarPlazaClave } from '../lib/plazas'
 import { neutralizeExportRow, neutralizeSpreadsheetFormula } from '../lib/exportSafety'
 import { logClientError } from '../lib/logging'
 import {
@@ -93,12 +93,7 @@ async function cargarOpcionesOrg() {
 onMounted(() => { if (canEditActivaciones.value) cargarOpcionesOrg() })
 
 function getCiudadActivacion(activacion) {
-  return (
-    activacion?.plaza_efectiva_registro ??
-    activacion?.ciudad_activacion ??
-    activacion?.plaza ??
-    ''
-  )
+  return etiquetaCiudadActivacion(activacion)
 }
 
 function normalizeDateOnly(value) {
@@ -112,7 +107,7 @@ function normalizeDateOnly(value) {
 }
 
 const activacionesFiltradas = computed(() => {
-  const plazaQuery = normalizeText(filtroPlaza.value)
+  const plazaQuery = normalizarPlazaClave(filtroPlaza.value)
   const distritoQuery = normalizeText(filtroDistrito.value)
   const impulsadorQuery = normalizeText(filtroImpulsador.value)
   const fechaDesde = normalizeDateOnly(filtroFechaDesde.value)
@@ -121,7 +116,7 @@ const activacionesFiltradas = computed(() => {
   const fechaFin = fechaDesde && fechaHasta && fechaDesde > fechaHasta ? fechaDesde : fechaHasta
 
   return props.activaciones.filter((activacion) => {
-    const plaza = normalizeText(getCiudadActivacion(activacion))
+    const plaza = normalizarPlazaClave(getCiudadActivacion(activacion))
     const distrito = normalizeText(activacion.zona_activacion)
     const impulsador = normalizeText(activacion.impulsador)
     const fecha = normalizeDateOnly(activacion.fecha_activacion)
@@ -245,11 +240,15 @@ function esUrl(value) {
 
 function etiquetaCampo(key) {
   const especiales = {
-    id: 'ID del registro', usuario_id: 'ID del usuario', created_at: 'Fecha de registro',
+    id: 'ID del registro', usuario_id: 'ID del usuario', usuario_email: 'Correo del activador',
+    created_at: 'Fecha de registro',
     fecha_activacion: 'Fecha de activacion', nombres_cliente: 'Nombres del cliente',
     apellidos_cliente: 'Apellidos del cliente', ci_cliente: 'CI del cliente',
     telefono_cliente: 'Telefono del cliente', email_cliente: 'Correo del cliente',
     ciudad_activacion: 'Ciudad de activacion', zona_activacion: 'Distrito o zona',
+    plaza_base_registro: 'Plaza organizacional (base)',
+    plaza_efectiva_registro: 'Plaza organizacional (efectiva)',
+    plaza_temporal_registro: 'Plaza organizacional (temporal)',
     tipo_activacion: 'Tipo de activacion', tipo_comercio: 'Tipo de comercio',
     tamano_tienda: 'Tamano de tienda', foto_url: 'Fotografia', descargo_app: 'Descargo la app',
     cash_in: 'Cash-In', cash_out: 'Cash-Out', qr_fisico: 'QR fisico', p2p: 'P2P',
@@ -311,13 +310,14 @@ function esTranseunteRow(row) {
 
 const seccionesDetalleConfig = [
   { title: 'Datos generales', keys: ['fecha_activacion', 'impulsador', 'ciudad_activacion', 'plaza', 'zona_activacion'] },
+  { title: 'Plaza organizacional', keys: ['plaza_base_registro', 'plaza_efectiva_registro', 'plaza_temporal_registro'] },
   { title: 'Datos del cliente', keys: ['nombres_cliente', 'apellidos_cliente', 'ci_cliente', 'telefono_cliente', 'email_cliente'] },
   { title: 'Informacion de la activacion', keys: ['tipo_activacion', 'descargo_app', 'registro', 'cash_in', 'cash_out', 'p2p', 'qr_fisico', 'respaldo', 'creditos', 'remesas'] },
   { title: 'Informacion del comercio o tienda', keys: ['nombre_comercio', 'comercio', 'cliente', 'tipo_comercio', 'tamano_tienda', 'tipo_tienda', 'rubro_comercio', 'rubro_comercio_otro', 'comercio_fuera_mercado', 'es_plaza_temporal', 'plaza_temporal'] },
   { title: 'Evidencias y fotografias', keys: ['foto_url', 'foto_cash_in', 'foto_cashin'] },
   { title: 'Ubicacion', keys: ['latitud', 'longitud', 'direccion', 'ubicacion'] },
   { title: 'Errores u observaciones', keys: ['hubo_error', 'tipo_error', 'descripcion_error', 'observaciones'] },
-  { title: 'Informacion tecnica del registro', keys: ['id', 'usuario_id', 'created_at', 'updated_at'] },
+  { title: 'Informacion tecnica del registro', keys: ['id', 'usuario_email', 'created_at', 'updated_at'] },
 ]
 
 const seccionesDetalle = computed(() => {
@@ -328,11 +328,20 @@ const seccionesDetalle = computed(() => {
   const sections = seccionesDetalleConfig.map((section) => ({
     title: section.title,
     fields: section.keys
-      .filter((key) => tieneValor(row[key]) || siempreVisibles.has(key))
-      .map((key) => ({ key, label: etiquetaCampo(key), value: siempreVisibles.has(key) ? row[key] === true : row[key], signedUrl: getFotoSignedUrl(row, key), image: key.toLowerCase().includes('foto') })),
+      .filter((key) => key === 'ciudad_activacion' || tieneValor(row[key]) || siempreVisibles.has(key))
+      .map((key) => ({
+        key,
+        label: etiquetaCampo(key),
+        value: key === 'ciudad_activacion'
+          ? etiquetaCiudadActivacion(row)
+          : (siempreVisibles.has(key) ? row[key] === true : row[key]),
+        signedUrl: getFotoSignedUrl(row, key),
+        image: key.toLowerCase().includes('foto'),
+      })),
   }))
+  const ocultos = tieneValor(row.usuario_email) ? new Set(['usuario_id']) : new Set()
   const extras = Object.entries(row)
-    .filter(([key, value]) => !usedKeys.has(key) && tieneValor(value))
+    .filter(([key, value]) => !usedKeys.has(key) && !ocultos.has(key) && tieneValor(value))
     .map(([key, value]) => ({ key, label: etiquetaCampo(key), value, signedUrl: getFotoSignedUrl(row, key), image: key.toLowerCase().includes('foto') }))
   sections.at(-1).fields.push(...extras)
   return sections.filter((section) => section.fields.length)
@@ -706,7 +715,7 @@ const columnasExportacion = [
   ['Creado', (row) => formatCreatedAtBolivia(row.created_at, { emptyValue: '' })],
   ['Fecha', (row) => row.fecha_activacion],
   ['Impulsador', (row) => row.impulsador],
-  ['Plaza', (row) => getCiudadActivacion(row)],
+  ['Ciudad', (row) => getCiudadActivacion(row)],
   ['Distrito', (row) => row.zona_activacion],
   ['Equipo', (row) => row.equipo_nombre_registro ?? row.equipo_numero_registro],
   ['Facturador', (row) => row.facturador_nombre_registro],
@@ -760,7 +769,7 @@ const checklistExcel = [
 
 const columnasExcelPersonalizado = [
   ['Fecha de la Activación', (row) => getFechaExcelDate(row)],
-  ['Ciudad', (row) => nombreLegiblePlaza(primerValor(row, ['plaza_efectiva_registro', 'ciudad_activacion', 'plaza']))],
+  ['Ciudad', (row) => etiquetaCiudadActivacion(row)],
   ['Zona de Activación', (row) => row.zona_activacion],
   ['Tipo de Activación', (row) => row.tipo_activacion],
   ['Tienda Barrio - Tamaño', (row) => tieneValor(row.tamano_tienda) ? row.tamano_tienda : esTiendaBarrioRow(row) ? primerValor(row, ['tipo_tienda']) : ''],
@@ -959,11 +968,11 @@ async function descargarExcelPersonalizado() {
       </label>
 
       <label>
-        <span class="field-label">Plaza</span>
+        <span class="field-label">Ciudad</span>
         <input
           type="text"
           v-model="filtroPlaza"
-          placeholder="Buscar plaza"
+          placeholder="Buscar ciudad"
           class="input-texto"
         />
       </label>
@@ -1008,7 +1017,7 @@ async function descargarExcelPersonalizado() {
             <th>Activador o impulsador</th>
             <th>Cliente o comercio</th>
             <th>Tipo Activacion</th>
-            <th>Plaza</th>
+            <th>Ciudad</th>
             <th>Estado o resultado</th>
             <th>Acciones</th>
           </tr>
@@ -1020,7 +1029,7 @@ async function descargarExcelPersonalizado() {
             <td>{{ activacion.impulsador || '-' }}</td>
             <td>{{ getClienteComercio(activacion) }}</td>
             <td>{{ activacion.tipo_activacion || '-' }}</td>
-            <td>{{ getCiudadActivacion(activacion) || '-' }}</td>
+            <td>{{ getCiudadActivacion(activacion) }}</td>
             <td><span class="resultado-etiqueta" :class="{ 'resultado-error': activacion.hubo_error === true }">{{ getResultado(activacion) }}</span></td>
             <td>
               <div class="acciones">
@@ -1048,9 +1057,9 @@ async function descargarExcelPersonalizado() {
               <label v-if="nombresVisible"><span class="field-label">Cédula de identidad</span><input v-model="formularioEdicion.ci_cliente" class="input-texto"></label>
               <label><span class="field-label">Telefono</span><input v-model="formularioEdicion.telefono_cliente" class="input-texto" inputmode="tel"></label>
               <label><span class="field-label">Correo</span><input v-model="formularioEdicion.email_cliente" type="email" class="input-texto"></label>
-              <label><span class="field-label">Plaza</span>
+              <label><span class="field-label">Ciudad de activación</span>
                 <template v-if="opcionesOrg.available">
-                  <select v-model="formularioEdicion.plaza" class="input-texto"><option value="">Selecciona plaza</option><option v-for="p in opcionesOrg.plazas" :key="p.id" :value="p.nombre">{{ p.nombre }}</option></select>
+                  <select v-model="formularioEdicion.plaza" class="input-texto"><option value="">Selecciona ciudad</option><option v-for="p in opcionesOrg.plazas" :key="p.id" :value="p.nombre">{{ p.nombre }}</option></select>
                 </template>
                 <template v-else>
                   <input v-model="formularioEdicion.plaza" class="input-texto">

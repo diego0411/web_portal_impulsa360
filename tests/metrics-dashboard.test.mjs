@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { computed, ref, watch } from 'vue'
 import { parse } from '@vue/compiler-sfc'
-import { nombreLegiblePlaza, normalizarPlazaClave } from '../src/lib/plazas.js'
+import { ciudadActivacion, etiquetaCiudadActivacion, nombreLegiblePlaza, normalizarPlazaClave, SIN_CIUDAD_REGISTRADA } from '../src/lib/plazas.js'
 import { neutralizeSpreadsheetFormula } from '../src/lib/exportSafety.js'
 
 // Ejecuta el setup real y sus computed; solo sustituye I/O y el montaje del DOM.
@@ -19,7 +19,7 @@ const rows = Array.from({ length: 5 }, (_, i) => ({
   usuario_id: activador, impulsador: 'Persona de prueba',
   lider_id_registro: i < 4 ? anterior : actual,
   lider_nombre_registro: i < 4 ? 'Líder anterior' : 'Líder actual',
-  fecha_activacion: `2026-10-0${i + 1}`, plaza: 'La Paz', tipo_activacion: 'comercio',
+  fecha_activacion: `2026-10-0${i + 1}`, ciudad_activacion: 'la_paz', plaza: 'La Paz', tipo_activacion: 'comercio',
 }))
 
 async function mount(authorizedRows = rows, catalog = users, catalogError = false) {
@@ -32,7 +32,8 @@ async function mount(authorizedRows = rows, catalog = users, catalogError = fals
       if (catalogError) throw new Error('Catálogo no disponible')
       return { users: structuredClone(catalog) }
     },
-    nombreLegiblePlaza, normalizarPlazaClave, neutralizeSpreadsheetFormula,
+    nombreLegiblePlaza, normalizarPlazaClave, ciudadActivacion, etiquetaCiudadActivacion, SIN_CIUDAD_REGISTRADA,
+    neutralizeSpreadsheetFormula,
     logClientError: () => {}, Blob,
     URL: { createObjectURL: (value) => { blob = value; return 'blob:test' }, revokeObjectURL: () => {} },
     document: { createElement: () => ({ click() {} }) },
@@ -50,23 +51,23 @@ async function assertCount(vm, expected) {
   assert.equal(csv ? csv.trim().split('\n').length - 1 : 0, expected)
 }
 
-test('equipo actual incluye las cinco activaciones históricas en ranking, KPI y CSV', async () => {
+test('el alcance del líder sigue lider_id_registro y conserva el corte por activador', async () => {
   const vm = await mount()
-  vm.filtroLider.value = `lid:${actual}`
   vm.filtroActivador.value = `uid:${activador}`
   await assertCount(vm, 5)
   assert.deepEqual(vm.dashboard.value.rows.map((r) => r.id), rows.map((r) => r.id))
-  assert.equal(vm.dashboard.value.topActivadores[0].key, `uid:${activador}`)
-  assert.equal(vm.dashboard.value.topLideres[0].value, 5)
-  assert.deepEqual(vm.opciones.value.lideres.map((l) => l.key), [`lid:${actual}`])
+  assert.deepEqual(vm.dashboard.value.topLideres.map((l) => [l.key, l.value]), [[`lid:${anterior}`, 4], [`lid:${actual}`, 1]])
+  assert.deepEqual(vm.opciones.value.lideres.map((l) => l.key), [`lid:${actual}`, `lid:${anterior}`])
   assert.deepEqual(vm.dashboard.value.rows, rows) // snapshots intactos
+  vm.filtroLider.value = `lid:${actual}`
+  await assertCount(vm, 1) // solo la activación registrada bajo el líder actual
   vm.filtroLider.value = `lid:${anterior}`
-  await assertCount(vm, 0)
+  await assertCount(vm, 4) // las registradas bajo el líder anterior
 })
 
 test('mantiene filtros de fechas, plaza, tipo y activador sobre el mismo corte', async () => {
   const vm = await mount()
-  vm.filtroLider.value = `lid:${actual}`
+  vm.filtroLider.value = `lid:${anterior}`
   vm.filtroActivador.value = `uid:${activador}`
   vm.filtroDesde.value = '2026-10-02'
   vm.filtroHasta.value = '2026-10-04'
@@ -90,14 +91,14 @@ test('no agrega registros desde el catálogo; conserva alcance global y UUID con
   assert.equal(admin.dashboard.value.topActivadores.length, 2)
   assert.equal(new Set(admin.dashboard.value.topActivadores.map((r) => r.key)).size, 2)
   admin.filtroLider.value = `lid:${actual}`
-  await assertCount(admin, 5)
+  await assertCount(admin, 1) // solo la fila registrada bajo el líder actual
   admin.filtroLider.value = `lid:${anterior}`
-  await assertCount(admin, 1)
+  await assertCount(admin, 5) // 4 del activador + 1 del otro, ambas bajo el anterior
   admin.filtroLider.value = ''
   await assertCount(admin, 6)
 })
 
-test('ranking general incluye solo activadores activos del catálogo, deduplicados y con cero', async () => {
+test('ranking general incluye todo el catálogo sin excluir inhabilitados, deduplicados y con cero', async () => {
   const cero = '20000000-0000-0000-0000-000000000003'
   const multirrol = '20000000-0000-0000-0000-000000000004'
   const catalog = [
@@ -111,7 +112,7 @@ test('ranking general incluye solo activadores activos del catálogo, deduplicad
   ]
   const vm = await mount(rows, catalog)
   assert.deepEqual(vm.dashboard.value.topActivadores.map((item) => [item.key, item.value]), [
-    [`uid:${activador}`, 5], [`uid:${cero}`, 0], [`uid:${multirrol}`, 0],
+    [`uid:${activador}`, 5], [`uid:${cero}`, 0], [`uid:${multirrol}`, 0], [`uid:${otro}`, 0],
   ])
   assert.equal(vm.opciones.value.activadores.filter((item) => item.key === `uid:${cero}`).length, 1)
   vm.filtroActivador.value = `uid:${cero}`
@@ -122,7 +123,7 @@ test('ranking general incluye solo activadores activos del catálogo, deduplicad
   vm.filtroPlaza.value = 'pkey:oruro'
   vm.filtroTipo.value = 'otro'
   await assertCount(vm, 0)
-  assert.deepEqual(vm.dashboard.value.topActivadores.map((item) => item.label), ['Ana', 'Berta', 'Zulma'])
+  assert.deepEqual(vm.dashboard.value.topActivadores.map((item) => item.label), ['Ana', 'Berta', 'Inactivo (inhabilitado)', 'Zulma'])
 })
 
 test('un fallo del catálogo no publica métricas de líder incompletas', async () => {
@@ -170,7 +171,11 @@ test('equipo combina integrantes autorizados con 0, 1 y varias activaciones sin 
   assert.equal(vm.porcentajeDelTotal(0), '0%')
   vm.filtroDesde.value = ''
   vm.filtroLider.value = `lid:${anterior}`
-  assert.equal(vm.dashboard.value.topActivadores.length, 0)
+  // Sin integrantes actuales del líder anterior, el ranking muestra a los
+  // activadores cuyas filas sí quedan atribuidas a él (suma == total).
+  assert.deepEqual(vm.dashboard.value.topActivadores.map((r) => [r.key, r.value]), [
+    [`uid:${activador}`, 3], [`uid:${otro}`, 1],
+  ])
   vm.filtroLider.value = ''
   vm.filtroEquipo.value = ''
   assert.deepEqual(vm.dashboard.value.topActivadores, baselineRanking)
@@ -225,39 +230,47 @@ test('reconoce Cliente antiguo como categoría sin alterar los tipos existentes'
   await assertCount(vm, 5)
 })
 
-test('unifica claves pid/pkey de la misma plaza en selector, filtro y gráfico Ciudades', async () => {
+test('la ciudad geográfica prevalece sobre la plaza organizacional en selector, filtro y gráfico Ciudades', async () => {
   const pidAlto = '70000000-0000-0000-0000-000000000001'
   const pidOruro = '70000000-0000-0000-0000-000000000002'
-  const pidSinNombre = '70000000-0000-0000-0000-000000000003'
   const data = [
-    { ...rows[0], id: 'a0000000-0000-0000-0000-000000000001', plaza_efectiva_id_registro: pidAlto, plaza_efectiva_registro: 'El Alto' },
-    { ...rows[1], id: 'a0000000-0000-0000-0000-000000000002', plaza_efectiva_id_registro: pidAlto, plaza_efectiva_registro: 'el_alto', plaza: '' },
-    { ...rows[2], id: 'a0000000-0000-0000-0000-000000000003', plaza_efectiva_registro: null, plaza: 'El Alto' },
-    { ...rows[3], id: 'a0000000-0000-0000-0000-000000000004', plaza_efectiva_id_registro: pidAlto, plaza_efectiva_registro: null, plaza: '' },
-    { ...rows[4], id: 'a0000000-0000-0000-0000-000000000005', plaza_efectiva_id_registro: pidOruro, plaza_efectiva_registro: 'Oruro', plaza: '' },
-    { ...rows[0], id: 'a0000000-0000-0000-0000-000000000006', plaza_efectiva_id_registro: pidSinNombre, plaza_efectiva_registro: null, plaza: '' },
+    // Activador de La Paz que activó en El Alto.
+    { ...rows[0], id: 'a0000000-0000-0000-0000-000000000001', ciudad_activacion: 'el_alto', plaza_efectiva_id_registro: pidAlto, plaza_efectiva_registro: 'La Paz', plaza_base_registro: 'La Paz' },
+    { ...rows[1], id: 'a0000000-0000-0000-0000-000000000002', ciudad_activacion: 'El Alto', plaza_efectiva_id_registro: pidAlto, plaza_efectiva_registro: 'el_alto', plaza: '' },
+    // Activador de El Alto que activó en La Paz.
+    { ...rows[2], id: 'a0000000-0000-0000-0000-000000000003', ciudad_activacion: 'la_paz', plaza_efectiva_id_registro: pidOruro, plaza_efectiva_registro: 'El Alto' },
+    // Sin ciudad registrada: no se sustituye por la plaza del activador.
+    { ...rows[3], id: 'a0000000-0000-0000-0000-000000000004', ciudad_activacion: null, plaza_efectiva_id_registro: pidAlto, plaza_efectiva_registro: 'La Paz', plaza: 'La Paz' },
+    { ...rows[4], id: 'a0000000-0000-0000-0000-000000000005', ciudad_activacion: '   ', plaza_efectiva_id_registro: pidOruro, plaza_efectiva_registro: 'Oruro', plaza: '' },
   ]
   const vm = await mount(data)
-  await assertCount(vm, 6)
+  await assertCount(vm, 5)
 
   const alto = vm.opciones.value.plazas.filter((p) => normalizarPlazaClave(p.nombre) === 'elalto')
-  assert.equal(alto.length, 1)
+  assert.equal(alto.length, 1, "'el_alto' y 'El Alto' son la misma ciudad")
   assert.equal(alto[0].key, 'pkey:elalto')
+  assert.equal(alto[0].nombre, 'El Alto')
 
-  assert.ok(vm.opciones.value.plazas.some((p) => p.key === 'pkey:oruro' && p.nombre === 'Oruro'))
-  assert.ok(vm.opciones.value.plazas.some((p) => p.key === `pid:${pidSinNombre}` && p.nombre === 'Sin plaza'))
+  const lapaz = vm.opciones.value.plazas.filter((p) => normalizarPlazaClave(p.nombre) === 'lapaz')
+  assert.equal(lapaz.length, 1, 'la plaza organizacional El Alto no crea otra ciudad de La Paz')
+  assert.equal(lapaz[0].key, 'pkey:lapaz')
 
-  const barrasAlto = vm.dashboard.value.porPlaza.filter((i) => normalizarPlazaClave(i.label) === 'elalto')
-  assert.equal(barrasAlto.length, 1)
-  assert.equal(barrasAlto[0].value, 4)
-  assert.ok(vm.dashboard.value.porPlaza.some((i) => i.key === 'pkey:oruro' && i.value === 1))
+  const sinCiudad = vm.opciones.value.plazas.find((p) => p.key === 'none')
+  assert.equal(sinCiudad.nombre, SIN_CIUDAD_REGISTRADA)
 
-  vm.filtroPlaza.value = alto[0].key
-  await assertCount(vm, 4)
-  vm.filtroPlaza.value = 'pkey:oruro'
-  await assertCount(vm, 1)
+  const barras = Object.fromEntries(vm.dashboard.value.porPlaza.map((i) => [i.key, i.value]))
+  assert.equal(barras['pkey:elalto'], 2, 'las dos filas con ciudad El Alto se agrupan juntas')
+  assert.equal(barras['pkey:lapaz'], 1, 'la fila con plaza organizacional El Alto cuenta como La Paz')
+  assert.equal(barras.none, 2, 'ciudad NULL o vacía agrupa en "Sin ciudad registrada"')
+
+  vm.filtroPlaza.value = 'pkey:elalto'
+  await assertCount(vm, 2)
+  assert.ok((await vm.csv()).includes('El Alto'))
+  vm.filtroPlaza.value = 'none'
+  await assertCount(vm, 2)
+  assert.ok((await vm.csv()).includes(SIN_CIUDAD_REGISTRADA))
   vm.filtroPlaza.value = ''
-  await assertCount(vm, 6)
+  await assertCount(vm, 5)
 })
 
 test('KPI Comercios cuenta solo registros con tipo_activacion comercio exacto', async () => {
